@@ -22,7 +22,7 @@ import { createHitlGraph } from "../agent/hitl.js";
 import { createMultiAgentGraph } from "../agent/multi.js";
 import { createAgentGraph } from "../agent/general.js";
 import { getExternalAgent } from "./external.js";
-import type { ApprovalPayload } from "./events.js";
+import type { AgentEvent, ApprovalPayload } from "./events.js";
 
 export interface DemoMeta {
   id: 1 | 2 | 3 | 4;
@@ -45,6 +45,19 @@ export function isDemo(v: unknown): v is 1 | 2 | 3 | 4 {
 
 export type SessionKind = "agent" | "demo" | "external";
 
+/** 一轮对话的服务端记录：用户消息 + 该轮全部 AgentEvent（供任意浏览器回放历史） */
+export interface TurnRecord {
+  /** 用户消息文本（审批恢复轮为「(批准/拒绝 xx)」标记） */
+  user: string;
+  /** 随消息附加的文件元信息（与前端 user block 的 files 对应） */
+  files?: Array<{ name: string; source: string; image: boolean }>;
+  /** 该轮 SSE 推给前端的全部事件（含 usage/error/interrupt，不含 done） */
+  events: AgentEvent[];
+}
+
+const MAX_TURN_RECORDS = 100;   // 每会话最多保留轮数
+const MAX_RECORD_EVENTS = 3000; // 单轮事件数上限（异常防护）
+
 export interface Session {
   id: string;
   kind: SessionKind;
@@ -65,6 +78,8 @@ export interface Session {
   configVersion: number;
   /** 已完成的对话轮数（供 mock 模式模拟用量递增 / 缓存命中率） */
   turns: number;
+  /** 服务端对话记录（每轮用户消息 + 全部事件），任意浏览器都能回放历史 */
+  turnHistory: TurnRecord[];
 }
 
 const sessions = new Map<string, Session>();
@@ -120,9 +135,37 @@ export function createSession(kind: SessionKind, demo: 1 | 2 | 3 | 4 | null, pro
     pendingApproval: null,
     configVersion: currentConfigVersion(),
     turns: 0,
+    turnHistory: [],
   };
   sessions.set(session.id, session);
   return session;
+}
+
+// ---------------------------------------------------------------------------
+// 服务端对话记录：开始一轮 / 流结束后回填事件 / 读取
+// ---------------------------------------------------------------------------
+
+/** 流开始前调用：登记本轮的用户消息（files 与前端 user block 的 files 同形） */
+export function beginTurnRecord(
+  session: Session,
+  user: string,
+  files?: Array<{ name: string; source: string; image: boolean }>
+): void {
+  session.turnHistory.push({ user, files, events: [] });
+  if (session.turnHistory.length > MAX_TURN_RECORDS) {
+    session.turnHistory.splice(0, session.turnHistory.length - MAX_TURN_RECORDS);
+  }
+}
+
+/** 流结束后调用：把该轮实际推送的事件挂到最后一条记录上（含被中止的部分轮） */
+export function completeTurnRecord(session: Session, events: AgentEvent[]): void {
+  const record = session.turnHistory.at(-1);
+  if (!record) return;
+  record.events = events.length > MAX_RECORD_EVENTS ? events.slice(-MAX_RECORD_EVENTS) : events;
+}
+
+export function getTurnHistory(session: Session): TurnRecord[] {
+  return session.turnHistory;
 }
 
 /** 项目删除后，把其会话迁移到默认项目 */

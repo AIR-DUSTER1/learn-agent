@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 
 const PROJECT_ROOT = resolve(join(dirname(fileURLToPath(import.meta.url)), "..", ".."));
 export { PROJECT_ROOT };
-const SKIPPED_DIRS = new Set(["node_modules", ".git", "dist", ".setting", ".playwright-mcp"]);
+export const SKIPPED_DIRS = new Set(["node_modules", ".git", "dist", ".setting", ".playwright-mcp"]);
 const MAX_LIST_ENTRIES = 2000;
 const MAX_READ_CHARS = 300_000;    // /api/fs/read 单文件上限
 const MAX_UPLOAD_CHARS = 400_000;  // 上传单文件上限（字符）
@@ -51,6 +51,7 @@ function assertAuthorized(absPath: string): void {
   }
   throw new Error("路径未授权：只能浏览项目根或已添加的远程文件夹");
 }
+export { assertAuthorized };
 
 export function listRoots(): Array<{ path: string; name: string }> {
   return [...authorizedRoots.entries()].map(([path, name]) => ({ path, name }));

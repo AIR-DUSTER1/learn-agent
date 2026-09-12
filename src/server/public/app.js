@@ -6,7 +6,7 @@
 "use strict";
 
 /** 前端版本标记：改动 app.js 后递增，用于确认浏览器跑的是不是最新脚本 */
-const APP_VERSION = "web-2026-09-12-15";
+const APP_VERSION = "web-2026-09-12-16";
 console.log(
   "%c[LangGraph Demo] 前端脚本已加载 " + APP_VERSION,
   "color:#fff;background:#5b8cff;padding:2px 8px;border-radius:4px"
@@ -641,6 +641,38 @@ function selectSession(sid) {
   if (s) showChatState(s);
   updateContextBar();
   chatScroll.scrollTop = chatScroll.scrollHeight;
+  hydrateFromServer(s); // 本地没有该会话的记录 → 从服务端拉取回放（修复历史会话打开为空）
+}
+
+/** 历史会话回放：localStorage 里没有这个会话的对话记录时（换浏览器 / 清过缓存），
+ *  从服务端拉取每轮「用户消息 + 事件流」，用与实时流完全相同的 handleEvent 重放渲染。 */
+async function hydrateFromServer(s) {
+  if (!s || s.stale) return;                       // 服务重启后的残留会话：服务端也没有记录
+  if (transcript(s.id).length) return;             // 本地已有 → 不拉
+  try {
+    const data = await api(`/api/sessions/${s.id}/transcript`);
+    const arr = transcript(s.id);
+    if (arr.length) return;                        // 竞态防护：等待期间本地已写入
+    for (const rec of data.records || []) {
+      const userBlock = { t: "user", text: rec.user, ...(rec.files?.length ? { files: rec.files } : {}) };
+      const ablock = { t: "assistant", parts: [] };
+      arr.push(userBlock, ablock);
+      for (const ev of rec.events || []) handleEvent(ev, ablock);
+      finalize(ablock);
+    }
+    saveLocal();
+    if (state.currentId === s.id) {
+      renderAll();
+      updateContextBar();
+      chatScroll.scrollTop = chatScroll.scrollHeight;
+    }
+    // 回放中的 interrupt 事件会把会话标成「待审批」——以服务端的真实状态纠正
+    // （审批早已处理过时，重放的那次 interrupt 只是历史记录）
+    if (typeof data.pendingApproval === "boolean") {
+      s.pendingApproval = data.pendingApproval;
+      renderSessions();
+    }
+  } catch { /* 服务端也没有记录（会话从未对话过 / 服务重启过）→ 保持现状 */ }
 }
 
 async function createSession(kind, demo, prefill, agentId) {

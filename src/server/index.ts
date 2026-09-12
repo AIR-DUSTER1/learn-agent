@@ -26,7 +26,7 @@ import { runGraphEvents } from "./stream.js";
 import { mockRun } from "./mock.js";
 import {
   createSession, deleteSession, getSession, isDemo, listSessions, DEMOS,
-  rebuildIfStale, bumpConfigVersion,
+  rebuildIfStale, bumpConfigVersion, beginTurnRecord, completeTurnRecord, getTurnHistory,
 } from "./sessions.js";
 import type { Session } from "./sessions.js";
 import { loadSettings, listProviders, getActiveId, addProvider, updateProvider, deleteProvider, activateProvider, maskKey, fetchGatewayModels, getContextWindowForActive, refreshModelInfo, getActiveModality } from "./settings.js";
@@ -82,12 +82,14 @@ function writeEvent(res: import("node:http").ServerResponse, event: AgentEvent):
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-/** 统一的流式执行器：真实图 or 模拟模型，都吐 AgentEvent */
+/** 统一的流式执行器：真实图 or 模拟模型，都吐 AgentEvent。
+ *  每个推给前端的事件同时收进 collector，流结束后交给 onDone 持久化到会话记录。 */
 async function streamToClient(
   res: import("node:http").ServerResponse,
   req: import("node:http").IncomingMessage,
   session: Session,
-  produce: (signal: AbortSignal) => AsyncGenerator<AgentEvent>
+  produce: (signal: AbortSignal) => AsyncGenerator<AgentEvent>,
+  onDone?: (events: AgentEvent[]) => void
 ): Promise<void> {
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -107,9 +109,11 @@ async function streamToClient(
     }
   });
 
+  const collected: AgentEvent[] = [];
   try {
     for await (const event of produce(controller.signal)) {
       if (controller.signal.aborted) break;
+      collected.push(event);
       writeEvent(res, event);
       if (event.type === "interrupt") session.pendingApproval = event.payload;
       if (event.type === "done") session.pendingApproval = null;
@@ -117,9 +121,12 @@ async function streamToClient(
   } catch (err) {
     if (!controller.signal.aborted) {
       const message = err instanceof Error ? err.message : String(err);
+      collected.push({ type: "error", message });
       writeEvent(res, { type: "error", message });
     }
   } finally {
+    // 被中止的部分轮也入档：历史回放时能看到「说了半截 + 停止」的真实经过
+    onDone?.(collected);
     if (!clientGone) {
       writeEvent(res, { type: "done" });
       res.end();
@@ -174,6 +181,10 @@ async function handleChat(
     fullMessage = buildUserContent(message, attachments, getActiveModality());
   }
 
+  // 登记本轮对话记录（流结束后由 streamToClient 回填事件 → 任意浏览器可回放历史）
+  const recordFiles = fileRefs.map((f) => ({ name: f.name ?? f.path ?? "附件", source: f.kind === "upload" ? "上传" : "项目文件", image: false }));
+  beginTurnRecord(session, message, recordFiles.length ? recordFiles : undefined);
+
   // ── 外部 Agent 会话：不走 LangGraph / mock，直接启动第三方工具子进程 ──
   if (session.kind === "external") {
     const agent = getExternalAgent(session.agentId ?? "");
@@ -186,7 +197,8 @@ async function handleChat(
     const text = typeof fullMessage === "string"
       ? fullMessage
       : fullMessage.filter((p) => p.type === "text").map((p) => p.text).join("\n\n");
-    await streamToClient(res, req, session, (signal) => runExternalAgent(agent, text, signal));
+    await streamToClient(res, req, session, (signal) => runExternalAgent(agent, text, signal),
+      (events) => completeTurnRecord(session, events));
     return;
   }
 
@@ -195,7 +207,7 @@ async function handleChat(
     session.turns += 1; // 轮次递增，供模拟用量（上下文增长 / 缓存命中率）使用
     await streamToClient(res, req, session, (signal) =>
       mockRun({ message: typeof fullMessage === "string" ? fullMessage : message, rawMessage: message, turnIndex: session.turns - 1, signal })
-    );
+    , (events) => completeTurnRecord(session, events));
     return;
   }
 
@@ -205,7 +217,7 @@ async function handleChat(
       threadId: session.threadId,
       signal,
     })
-  );
+  , (events) => completeTurnRecord(session, events));
 }
 
 async function handleResume(
@@ -226,10 +238,12 @@ async function handleResume(
   // 让本次 resume 在原图上完成（配置从下一条消息起生效）
   if (!approval) rebuildIfStale(session);
 
+  beginTurnRecord(session, `(人工审批：${decision === "approve" ? "批准" : "拒绝"} ${approval?.toolName ?? "操作"}）`);
+
   if (!config.apiKey) {
     await streamToClient(res, req, session, (signal) =>
       mockRun({ decision, approval: approval ?? undefined, turnIndex: session.turns, signal })
-    );
+    , (events) => completeTurnRecord(session, events));
     return;
   }
 
@@ -240,7 +254,7 @@ async function handleResume(
       threadId: session.threadId,
       signal,
     })
-  );
+  , (events) => completeTurnRecord(session, events));
 }
 
 // ---------------------------------------------------------------------------
@@ -416,6 +430,21 @@ const server = createServer(async (req, res) => {
     if (sessionMatch && req.method === "DELETE") {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ ok: deleteSession(sessionMatch[1]) }));
+      return;
+    }
+
+    // 会话对话记录回放（历史会话查看）：本地浏览器没有该会话的缓存时，
+    // 前端用它从服务端拉取每轮「用户消息 + 事件流」并按原样重放渲染
+    const transcriptMatch = pathname.match(/^\/api\/sessions\/([\w-]+)\/transcript$/);
+    if (transcriptMatch && req.method === "GET") {
+      const session = getSession(transcriptMatch[1]);
+      if (!session) {
+        res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: "会话不存在或服务已重启" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ records: getTurnHistory(session), pendingApproval: session.pendingApproval }));
       return;
     }
 
