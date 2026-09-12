@@ -20,14 +20,16 @@ import { createChatModel } from "../llm.js";
 import { calculator, getCurrentTime, getWeather } from "../tools.js";
 
 const tools = [calculator, getCurrentTime, getWeather];
-const model = createChatModel().bindTools(tools);
-
-async function agentNode(state: typeof MessagesAnnotation.State) {
-  const response = await model.invoke(state.messages);
-  return { messages: [response] };
-}
 
 export function createMemoryGraph() {
+  // ★ 模型在建图时创建，Web 端改配置后新建会话即用新模型
+  const model = createChatModel().bindTools(tools);
+
+  async function agentNode(state: typeof MessagesAnnotation.State) {
+    const response = await model.invoke(state.messages);
+    return { messages: [response] };
+  }
+
   // MemorySaver：内存版检查点，进程退出即丢失，适合学习
   // 生产环境可换 SqliteSaver / PostgresSaver 实现持久化
   const checkpointer = new MemorySaver();

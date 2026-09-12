@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LangGraph Agent 学习 Demo</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+  <script>
+    // 防闪烁：样式表应用前先恢复上次选择的主题
+    try { if (localStorage.getItem("lg-agent-theme") === "light") document.documentElement.dataset.theme = "light"; } catch (e) {}
+  </script>
+</head>
+<body>
+  <div id="sidebar-scrim" class="hidden"></div>
+  <div id="app">
+    <!-- ============ 侧栏：会话管理（参考 ZCode 的会话列表） ============ -->
+    <aside id="sidebar">
+      <div class="side-header">
+        <div class="logo">
+          <span class="logo-mark">⚡</span>
+          <div class="logo-text">
+            <strong>LangGraph Agent</strong>
+            <span>Agent 工作台 · 内置学习示例</span>
+          </div>
+        </div>
+        <button id="new-chat-btn" title="新建对话（默认通用 Agent，归属当前项目）">＋ 新建对话</button>
+        <div class="project-switch" id="project-switch">
+          <button id="project-btn" class="project-btn" title="选择项目文件夹（本地 / 云端）">
+            <span id="project-btn-icon">🗂</span>
+            <span id="project-btn-text">全部项目</span>
+            <span class="chevron-down">▾</span>
+          </button>
+          <div id="project-menu" class="provider-menu hidden"></div>
+        </div>
+      </div>
+
+      <nav id="session-list" aria-label="会话列表"></nav>
+
+      <div class="side-footer">
+        <button id="side-model" class="side-model" title="点击修改供应商 / API Key / 模型">
+          <span class="dot"></span>
+          <span id="side-model-text">加载中…</span>
+        </button>
+        <div id="side-foot-note" class="foot-note">点击上方模型名可修改配置</div>
+      </div>
+    </aside>
+
+    <!-- ============ 主区：顶栏 + 消息流 + 输入框 ============ -->
+    <main id="main">
+      <header id="topbar">
+        <button id="sidebar-toggle" class="settings-btn" title="会话 / 项目列表">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="title-wrap">
+          <span id="session-title">未选择会话</span>
+          <span id="demo-badge" class="badge hidden"></span>
+        </div>
+        <div class="topbar-right">
+          <span id="mode-badge" class="badge mode-mock hidden" title="启用的供应商没有 API Key，模型决策由本地脚本模拟；工具结果是真实执行的">模拟模式</span>
+          <div class="provider-switch">
+            <button id="provider-btn" class="provider-btn" title="切换供应商 / 模型">
+              <span id="provider-btn-text">加载中…</span>
+              <span class="chevron-down">▾</span>
+            </button>
+            <div id="provider-menu" class="provider-menu hidden"></div>
+          </div>
+          <button id="theme-btn" class="settings-btn" title="切换浅色主题">☀️</button>
+          <button id="settings-btn" class="settings-btn" title="供应商管理：添加 / 编辑 / 删除">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <span id="status-dot" class="status idle" title="空闲"></span>
+        </div>
+      </header>
+
+      <div id="chat-scroll">
+        <div id="welcome" class="welcome">
+          <div class="welcome-hero">
+            <div class="welcome-logo">⚡</div>
+            <h1>LangGraph Agent</h1>
+            <p>可正常使用的 Agent 工作台：附加文件、切换模型、多轮追问，高风险操作会先请求确认</p>
+          </div>
+          <div class="examples-label">试试这些</div>
+          <div id="example-chips" class="example-chips"></div>
+          <div class="examples-label">内置示例（学习 Demo）</div>
+          <div id="demo-cards" class="demo-cards"></div>
+        </div>
+        <div id="messages"></div>
+      </div>
+
+      <footer id="composer">
+        <!-- 待发送附件 chips -->
+        <div id="attach-chips" class="attach-chips hidden"></div>
+        <!-- 上下文容量条：token 用量来自模型返回的 usage（缓存占比 = 提示词缓存命中/输入） -->
+        <div id="context-bar" class="context-bar hidden">
+          <div class="ctx-track"><div id="ctx-fill" class="ctx-fill"></div></div>
+          <div class="ctx-meta">
+            <span id="ctx-text"></span>
+            <span id="ctx-cache" class="ctx-cache hidden"></span>
+          </div>
+        </div>
+        <div id="input-box">
+          <button id="attach-btn" class="attach-btn" title="附加文件：项目文件 / 远程文件夹 / 本地上传">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <textarea id="input" rows="1" placeholder="给 Agent 发送消息…（Enter 发送 / Shift+Enter 换行）" disabled></textarea>
+          <button id="send-btn" class="icon-btn" title="发送" disabled>
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+          <button id="stop-btn" class="icon-btn hidden" title="停止生成">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+        </div>
+        <div id="composer-hint" class="composer-hint">📎 可附加项目文件 / 远程文件夹 / 本地文件 · 发送邮件等高风险操作会先请求人工确认</div>
+      </footer>
+    </main>
+  </div>
+
+  <!-- ============ 新建对话弹窗：通用 Agent（默认）+ 内置示例 ============ -->
+  <div id="modal-mask" class="hidden">
+    <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">新建对话</h2>
+      <p class="settings-sub">默认使用通用 Agent（工具 + 记忆 + 审批）；也可从内置示例创建，观察特定图结构的运行方式</p>
+      <div id="modal-cards" class="demo-cards"></div>
+
+      <div class="field-label ext-head">🔌 外部 Agent <em class="key-state">第三方 Git 仓库接入 · 每条消息启动一次其启动命令</em></div>
+      <div id="external-cards" class="demo-cards"></div>
+      <button id="add-external-btn" class="ghost-btn small add-provider" type="button">＋ 接入外部 Agent（Git 地址）</button>
+
+      <button id="modal-close" class="ghost-btn">取消</button>
+    </div>
+  </div>
+
+  <!-- ============ 设置弹窗：供应商列表 + 编辑表单 ============ -->
+  <div id="settings-mask" class="hidden">
+    <div id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 id="settings-title">⚙ 设置 —— 供应商管理</h2>
+      <p class="settings-sub">可添加多个 OpenAI 兼容网关（中转站 / vLLM / 官方 API），点击「启用」随时切换</p>
+
+      <div class="field-label">供应商列表</div>
+      <div id="provider-list"></div>
+      <button id="add-provider-btn" class="ghost-btn small add-provider">＋ 添加供应商</button>
+
+      <div id="provider-form-wrap" class="hidden">
+        <div class="field-label edit-title">正在编辑：<em id="pf-mode" class="key-state"></em></div>
+
+        <label class="field">
+          <span class="field-label">名称</span>
+          <input id="pf-name" type="text" spellcheck="false" placeholder="例如 TokenRhythm / 本地 vLLM" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">网关地址 BASE_URL</span>
+          <input id="pf-base-url" type="text" spellcheck="false" placeholder="https://api.example.com/v1" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">API Key <em id="pf-key-state" class="key-state"></em></span>
+          <div class="key-row">
+            <input id="pf-api-key" type="password" spellcheck="false" placeholder="编辑时留空 = 保持当前 Key 不变" />
+            <button id="pf-key-toggle" type="button" class="ghost-btn small" title="显示/隐藏">👁</button>
+          </div>
+        </label>
+
+      <label class="field">
+        <span class="field-label">模型 MODEL</span>
+        <div class="key-row">
+          <input id="pf-model" type="text" spellcheck="false" list="model-list" placeholder="例如 deepseek-v4-flash" />
+          <button id="pf-fetch-models" type="button" class="ghost-btn small" title="从网关拉取可用模型列表">获取列表</button>
+        </div>
+        <datalist id="model-list"></datalist>
+      </label>
+
+      <label class="field">
+        <span class="field-label">能力与上下文</span>
+        <div class="cap-row">
+          <label class="cap-check" title="勾选后可附加图片（多模态模型才支持图片输入）">
+            <input id="pf-vision" type="checkbox" />
+            <span>多模态（支持图片输入）</span>
+          </label>
+          <input id="pf-ctx" class="cap-ctx" type="number" min="1024" step="1"
+                 placeholder="上下文窗口 tokens（留空 = 自动从网关获取）" />
+        </div>
+      </label>
+
+        <div id="settings-status" class="settings-status"></div>
+
+        <div class="settings-actions">
+          <button id="pf-test" class="ghost-btn">测试连接</button>
+          <div class="spacer"></div>
+          <button id="pf-cancel-edit" class="ghost-btn">取消编辑</button>
+          <button id="pf-save" class="btn btn-approve">保存供应商</button>
+        </div>
+      </div>
+
+      <p class="settings-note">「启用」的供应商决定聊天使用的模型；切换后新建会话立即生效，已有会话在下一条消息时自动切换（Demo 2/3 的多轮记忆会重置，等同重启服务）。配置保存在本地 <code>.web-config.json</code>（已 gitignore），优先于 <code>.env</code>。</p>
+    </div>
+  </div>
+
+  <!-- ============ 文件选择器：项目 / 远程文件夹 / 本地上传 ============ -->
+  <div id="fs-mask" class="hidden">
+    <div id="fs-modal" role="dialog" aria-modal="true" aria-labelledby="fs-title">
+      <h2 id="fs-title">📎 附加文件</h2>
+      <div class="fs-toolbar">
+        <select id="fs-root" class="fs-root-select" title="选择位置"></select>
+        <button id="fs-up" class="ghost-btn small" title="上一级">↑ 上级</button>
+        <span id="fs-path" class="fs-path"></span>
+      </div>
+      <div class="fs-toolbar fs-toolbar-2">
+        <button id="fs-remote" class="ghost-btn small">🌐 打开远程文件夹</button>
+        <button id="fs-upload-btn" class="ghost-btn small" type="button">⬆ 上传本地文件</button>
+        <button id="fs-upload-help" class="ghost-btn small" type="button" title="上传没反应？">?</button>
+        <input id="fs-upload-input" type="file" multiple
+               style="position:absolute;width:1px;height:1px;opacity:0.01;pointer-events:none;" />
+        <span class="fs-hint">云端部署可上传本机文件；也可以把文件直接<b>拖拽</b>到本窗口上传（部分自动化启动的浏览器会屏蔽系统选择框）</span>
+      </div>
+      <div id="fs-list" class="fs-list"></div>
+      <div class="fs-footer">
+        <div id="fs-selected" class="fs-selected">未选择文件</div>
+        <button id="fs-done" class="btn btn-approve">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 通用弹窗：自研组件，替代原生 alert / prompt / confirm ============ -->
+  <div id="ui-dialog-mask" class="hidden">
+    <div id="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="ui-dialog-title">
+      <h3 id="ui-dialog-title">提示</h3>
+      <div id="ui-dialog-msg"></div>
+      <div id="ui-dialog-input-row" class="hidden">
+        <input id="ui-dialog-input" type="text" spellcheck="false" autocomplete="off" />
+      </div>
+      <div id="ui-dialog-actions">
+        <button id="ui-dialog-cancel" class="ghost-btn" type="button">取消</button>
+        <button id="ui-dialog-ok" class="btn btn-approve" type="button">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -24,11 +24,14 @@
 
 ### 1.1 这是什么
 
-一个用 **LangGraph.js（v1.4.9）+ TypeScript + CLI** 搭建的 Agent 学习项目。
-4 个 Demo 由浅入深，覆盖 Agent 开发的全部核心概念：
+一个用 **LangGraph.js（v1.4.9）+ TypeScript** 搭建的 **Agent Web 应用**（可正常使用），
+同时内置 **4 个学习示例**作为「事例选择」：
+新建对话默认使用**通用 Agent**（`src/agent/general.ts`：工具循环 + 多轮记忆 + 高风险审批 +
+📎 文件上下文，按产品逻辑组装）；示例则刻意保持教学形态，用于观察特定图结构的运行方式。
 
-| Demo | 文件 | 概念 | 一句话说明 |
+| 示例 | 文件 | 概念 | 一句话说明 |
 |------|------|------|-----------|
+| 通用 Agent | `src/agent/general.ts` | 产品化组合（默认） | ReAct + 记忆 + 审批 + 文件上下文 |
 | 1 | `src/agent/basic.ts` | State / Node / Edge / 条件边 / 工具循环 | 亲手搭一张最基础的 ReAct 图 |
 | 2 | `src/agent/memory.ts` | Checkpointer / thread_id | 给同一张图加上多轮记忆 |
 | 3 | `src/agent/hitl.ts` | interrupt / Command.resume | 高风险操作（发邮件）执行前人工审批 |
@@ -37,9 +40,9 @@
 ### 1.2 项目结构
 
 ```
-D:\code\agent\
+E:\study\work\learn-agent\
 ├── .env / .env.example   # 网关配置（baseURL / API_KEY / MODEL），.env 已 gitignore
-├── package.json          # npm scripts：demo:1~4 / models / start / typecheck
+├── package.json          # npm scripts：web / demo:1~4 / models / start / typecheck
 ├── tsconfig.json         # ES2022 / NodeNext / strict
 ├── README.md             # 快速开始
 ├── docs/agent-wiki.md    # 本文件
@@ -50,12 +53,23 @@ D:\code\agent\
     ├── llm.ts            # 模型工厂：任意 OpenAI 兼容网关的接入点
     ├── tools.ts          # 4 个自定义工具（zod 定义参数）
     ├── agent/            # 4 个 demo 的图定义（学习的重点）
-    └── cli.ts            # 统一入口：交互菜单 + 流式节点日志 + 审批交互
+    ├── cli.ts            # CLI 入口：交互菜单 + 流式节点日志 + 审批交互
+    └── server/           # Web 界面（参考 ZCode 聊天 UI）
+        ├── index.ts      # node:http 服务：静态页面 + SSE 接口（chat / resume / sessions）
+        ├── stream.ts     # LangGraph 原始流事件 → 前端友好事件（token/工具卡/审批）的翻译层
+        ├── mock.ts       # 未配置 API_KEY 时的模拟模型（事件协议与真实图一致）
+        ├── sessions.ts   # 内存会话存储（每会话一张图 + 绑定 thread_id）
+        ├── settings.ts   # 多供应商管理（增/删/改/切换 + context_length 缓存）
+        ├── projects.ts   # 项目文件夹（本地目录 / 云端 Git 仓库 clone + 会话分组）
+        ├── files.ts      # 文件上下文（项目/远程文件夹/本地上传，路径授权防穿越）
+        ├── events.ts     # SSE 事件协议定义
+        └── public/       # 前端三件套：index.html / style.css / app.js（零框架零构建）
 ```
 
 ### 1.3 运行方式（3 秒上手）
 
 ```bash
+npm run web           # 打开 Web 聊天界面（http://localhost:3000，推荐）
 npm run demo:1        # 运行 Demo 1（带默认示例问题）
 npx tsx src/cli.ts 1 "你的自定义问题"   # 带自定义问题
 npm start             # 弹出菜单选择 Demo
@@ -322,6 +336,7 @@ async function routeFromSupervisor(state) {
 
 | 命令 | 作用 |
 |------|------|
+| `npm run web` | 启动 Web 聊天界面（http://localhost:3000） |
 | `npm run demo:1` ~ `demo:4` | 运行对应 Demo |
 | `npx tsx src/cli.ts N "问题"` | 带自定义问题运行（N=1~4） |
 | `npm start` | 交互菜单 |
@@ -329,6 +344,81 @@ async function routeFromSupervisor(state) {
 | `npm run typecheck` | TypeScript 类型检查（tsc --noEmit） |
 
 > 用 `tsx` 直接运行 TS，不需要编译步骤；`tsconfig.json` 保持 `noEmit`，类型检查单独跑。
+
+### 3.11 `src/server/` — Web 聊天界面（参考 ZCode）
+
+**职责**：给 4 个 Demo 套上一个 ZCode 风格的聊天界面 —— 流式回答、工具调用卡片、
+Human-in-the-loop 审批按钮、多会话侧栏。**零前端框架、零构建步骤**（原生 HTML/CSS/JS + SSE），
+服务端也只用 `node:http`，不引入 Express。
+
+```
+浏览器 (public/)                       服务端 (index.ts)
+┌─────────────────────────┐   POST /api/chat   ┌──────────────────────────┐
+│ app.js  ── fetch SSE ──▶│ ── graph.stream ──▶│ 4 个 Demo 的图（agent/）  │
+│  ▸ 渲染 AgentEvent      │ ◀── data: {...} ── │          or               │
+│  ▸ 流式 Markdown        │     (SSE 事件帧)    │ mock.ts（无 KEY 时）      │
+│  ▸ 工具卡 / 审批按钮    │                    └──────────────────────────┘
+└─────────────────────────┘
+```
+
+关键设计（详见各文件头注释）：
+
+- **事件翻译层 `stream.ts`**：`streamMode: ["messages","updates"]` 的原始事件形状复杂
+  （`[mode, payload]` 元组、子图回显整段历史），统一翻译成 7 种 `AgentEvent`
+  （node / token / tool_call / tool_result / interrupt / ai_message / error）。
+  内容只认 messages 模式，updates 只取「节点名 + interrupt + 兜底消息」，按消息 id 去重；
+- **会话绑定 `sessions.ts`**：每个会话一张图实例，Demo 2/3 的 `thread_id` 绑定会话 id，
+  多轮记忆与 interrupt 状态因此得以延续；
+- **在线配置 `settings.ts`（多供应商）**：设置页（⚙）可添加任意多个供应商档案
+  （名称 + BASE_URL + API Key + 模型），列表中「启用」一键切换，顶栏 ▾ 也有快捷菜单。
+  配置分三层：`.env` < `.web-config.json`（保存的供应商列表 + activeId，gitignore）< 运行中内存。
+  切换/修改启用中的供应商 → 配置版本号 +1，**已有会话在下次发消息时自动重建图**
+  （Demo 2/3 的记忆随之重置）；Key 只回传掩码，编辑时留空 = 保持不变；
+  旧版单供应商配置文件会自动迁移；首次启动无文件时从 `.env` 播种一个默认档案；
+- **模型在建图时创建**：4 个 agent 文件的 `createChatModel()` 都在 `createXxxGraph()` 工厂内
+  调用（而非模块加载时），这是「改配置能对新会话生效」的前提；
+- **模拟模式 `mock.ts`**：未配置 `API_KEY` 时自动接管「模型决策」（脚本编排，工具结果仍真实执行），
+  事件协议与真实图完全一致 —— 没有Key 也能完整体验 UI 的全部交互；
+- **用量与容量条 `stream.ts` / `settings.ts`**：网关返回的 `usage`
+  （`usage_metadata`，兼容旧 `tokenUsage` 形状）被翻译成 `usage` 事件 ——
+  `input_tokens` ≈ 当时整段对话的上下文大小，`input_token_details.cache_read`
+  是提示词缓存命中；前端汇总为输入框上方的「上下文容量条 + 缓存命中」，
+  分母（窗口长度）= 供应商设置里**手动填写的上下文窗口**（优先），
+  否则取网关 `/models` 的 `context_length`（服务端按供应商缓存，
+  启动/切换供应商时后台刷新；两者都没有时容量条只显示 token 数）。
+  每个助手回合末尾还展示 `↑ 输入 · ↓ 输出 · 缓存 N%` 小字。模拟模式下由 `mock.ts`
+  合成同协议的假用量（轮次越多上下文越大、命中率递增）；
+- **图片与多模态 `files.ts`**：上传/拖拽/粘贴的图片以 dataURL 暂存，
+  供应商模型的 `modality: "vision"`（设置里勾选「多模态」）时，
+  发送会组装成 OpenAI 兼容的 `image_url` 内容块随消息进入图；
+  纯文本模型附加图片会在发送前被 400 拦截并提示改用多模态模型；
+- **文件上下文 `files.ts`**：📎 给消息附加文件，三种来源 ——
+  ① **项目文件夹**（仓库根，默认授权）；
+  ② **远程文件夹**（输入服务器上的绝对路径显式授权后可浏览，⚠ 会把目录暴露给网页端，仅限可信环境）；
+  ③ **本地上传**（云端部署时服务器没有用户的本机文件，浏览器选文本文件上传到内存暂存区）。
+  前端只传「引用」（路径 / uploadId），内容由服务端在发送时读取并校验
+  （授权前缀校验防穿越、二进制拒绝、单文件超长截断），再以
+  `--- 附件 N: 名 ---` 边界拼进用户消息，因此 4 个 Demo 的图与 mock 无需任何改动；
+- **项目文件夹 `projects.ts`**：参考 ZCode 的「项目 ▾」—— 侧栏可选项目，
+  会话按项目分组、新建对话归属当前项目。项目分两类并用样式区分：
+  **💻 本地**（服务器磁盘目录）与 **☁️ 云端**（Git 仓库地址，添加时
+  `git clone --depth 1` 到 `.setting/cloud/` 缓存并注册为可浏览根，
+  菜单里 ⟳ = `git pull`，删除 = 撤销授权并清缓存，其会话迁移到默认项目）。
+  列表持久化在 `.web-config.json` 的 `projects/activeProjectId` 字段，
+  启动时校验目录仍在才恢复；
+- **审批交互**：`interrupt` 事件 → 前端渲染批准/拒绝按钮 → `POST /api/resume` →
+  服务端 `Command({ resume })` 继续被暂停的图（与 CLI 的 Demo 3 同一条路径）；
+- **外部 Agent 接入 `external.ts`**：在「新建对话」弹窗粘贴一个 Git 仓库地址即可把
+  第三方 agent 工具（如 deepseek-harness）接入工作台 —— 服务端 clone 到
+  `.setting/agents/`，按 **`agent.json` 清单 → package.json bin/main → 常见入口文件**
+  的顺序自动识别启动方式（识别不出就手填一条命令），注册为会话类型 `external`。
+  该类会话不走 LangGraph：每条消息启动一次子进程（`{{prompt}}` 占位符替换或 stdin
+  传 `{"message":…}`），stdout 按块转成 `token` 事件复用同一条 SSE 通道，
+  非 0 退出展示 stderr 尾部；180s 超时，「停止」= kill 子进程。
+  `passCredentials: true` 才把网关配置注入子进程环境（默认不传）。
+  ⚠ 接入即运行第三方代码，只加可信仓库。注册表持久化在 `.web-config.json`
+  的 `externalAgents` 字段（经 `config-store.ts` 与 providers/projects 合并写入，
+  修复了此前保存供应商会抹掉项目列表的隐患）。
 
 ---
 

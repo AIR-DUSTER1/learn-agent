@@ -35,7 +35,6 @@ import type { Tool } from "@langchain/core/tools";
 // 工具集：多了一个「高风险」的 send_email
 // ---------------------------------------------------------------------------
 const tools = [calculator, getCurrentTime, getWeather, sendEmail];
-const model = createChatModel().bindTools(tools);
 
 /** 传给 interrupt() 的载荷：CLI 根据它渲染审批提示 */
 export interface ApprovalRequest {
@@ -46,18 +45,12 @@ export interface ApprovalRequest {
 }
 
 // ---------------------------------------------------------------------------
-// 节点「agent」：与 Demo 1 相同，让模型决定回答还是调工具
-// ---------------------------------------------------------------------------
-async function agentNode(state: typeof MessagesAnnotation.State) {
-  const response = await model.invoke(state.messages);
-  return { messages: [response] };
-}
-
-// ---------------------------------------------------------------------------
 // 节点「tools」：手动实现工具执行循环（演示 ToolNode 的内部原理）
 //   ★ 关键：执行 send_email 之前先 interrupt() 暂停，等人类点头
+//   （本节点不依赖模型，放在模块级；模型在建图时才创建）
+//   导出复用：通用 Agent（general.ts）也用这个节点做高风险操作审批
 // ---------------------------------------------------------------------------
-async function approvalToolsNode(state: typeof MessagesAnnotation.State) {
+export async function approvalToolsNode(state: typeof MessagesAnnotation.State) {
   const lastMessage = state.messages.at(-1) as AIMessage;
   const toolResults: ToolMessage[] = [];
 
@@ -102,6 +95,15 @@ async function approvalToolsNode(state: typeof MessagesAnnotation.State) {
 }
 
 export function createHitlGraph() {
+  // ★ 模型在建图时创建：Web 端修改供应商/模型后，新建会话即用新配置
+  const model = createChatModel().bindTools(tools);
+
+  // 节点「agent」：与 Demo 1 相同，让模型决定回答还是调工具
+  async function agentNode(state: typeof MessagesAnnotation.State) {
+    const response = await model.invoke(state.messages);
+    return { messages: [response] };
+  }
+
   // interrupt/resume 依赖 checkpointer 保存「暂停时的状态」，所以必须有
   const checkpointer = new MemorySaver();
 
@@ -116,7 +118,7 @@ export function createHitlGraph() {
   return graph;
 }
 
-/** 供 CLI 使用：把用户的审批结果「喂」回被暂停的图 */
+/** 供 CLI / Web 使用：把用户的审批结果「喂」回被暂停的图 */
 export function buildResumeCommand(decision: "approve" | "reject") {
   // Command 的泛型参数：Resume 值类型 / Update / 目标节点。
   // 纯 resume 命令不涉及 goto 路由，这里显式给三个 any 省略类型推断。
