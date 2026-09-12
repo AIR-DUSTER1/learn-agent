@@ -6,7 +6,7 @@
 "use strict";
 
 /** 前端版本标记：改动 app.js 后递增，用于确认浏览器跑的是不是最新脚本 */
-const APP_VERSION = "web-2026-09-12-14";
+const APP_VERSION = "web-2026-09-12-15";
 console.log(
   "%c[LangGraph Demo] 前端脚本已加载 " + APP_VERSION,
   "color:#fff;background:#5b8cff;padding:2px 8px;border-radius:4px"
@@ -104,6 +104,12 @@ const sendBtn = $("send-btn");
 const stopBtn = $("stop-btn");
 
 const DEMO_BADGE_TEXT = { 1: "示例 1 · 基础 ReAct", 2: "示例 2 · 对话记忆", 3: "示例 3 · 人工审批", 4: "示例 4 · 多 Agent" };
+/** 请求协议 → 徽标短文案（openai 是默认，不显示徽标） */
+const PROTOCOL_LABEL = {
+  "openai-responses": "Responses",
+  "anthropic": "Anthropic",
+  "gemini": "Gemini",
+};
 const TOOL_ICONS = { calculator: "🧮", get_weather: "☁️", get_current_time: "⏰", send_email: "📧", delegate: "🧭" };
 const NODE_ICONS = { agent: "🧠", tools: "🔧", supervisor: "👔", researcher: "🔍", writer: "✍️" };
 
@@ -1451,7 +1457,7 @@ function renderProviderList() {
     row.className = "provider-row" + (p.active ? " active" : "");
     row.innerHTML = `
       <div class="p-info">
-        <div class="p-name"><span class="nm"></span><span class="p-badge ${p.hasKey ? "" : "nokey"}">${p.hasKey ? "✓ Key" : "无 Key"}</span>${p.modality === "vision" ? '<span class="p-badge vis">多模态</span>' : ""}${p.active ? '<span class="p-badge">启用中</span>' : ""}</div>
+        <div class="p-name"><span class="nm"></span><span class="p-badge ${p.hasKey ? "" : "nokey"}">${p.hasKey ? "✓ Key" : "无 Key"}</span>${p.modality === "vision" ? '<span class="p-badge vis">多模态</span>' : ""}${p.protocol && p.protocol !== "openai" ? `<span class="p-badge proto">${PROTOCOL_LABEL[p.protocol] || p.protocol}</span>` : ""}${p.active ? '<span class="p-badge">启用中</span>' : ""}</div>
         <div class="p-detail"></div>
       </div>
       <div class="p-actions">
@@ -1484,6 +1490,7 @@ function openProviderForm(providerId) {
   $("pf-api-key").value = "";
   $("pf-api-key").type = "password";
   $("pf-model").value = p?.model || "";
+  $("pf-protocol").value = p?.protocol || "openai";
   $("pf-vision").checked = p ? p.modality === "vision" : false;
   $("pf-ctx").value = p?.manualContextWindow ?? "";
   $("pf-key-state").textContent = p ? (p.hasKey ? `已保存 ${p.keyMasked}，留空则不修改` : "未保存 Key") : "";
@@ -1513,6 +1520,7 @@ async function testConnection() {
   const body = { baseURL };
   if (apiKeyRaw) body.apiKey = apiKeyRaw;
   else if (editingProviderId) body.providerId = editingProviderId;
+  body.protocol = $("pf-protocol").value;
 
   setSettingsStatus("正在连接网关…", "");
   try {
@@ -1549,6 +1557,7 @@ async function saveProvider() {
     name,
     baseURL,
     model,
+    protocol: $("pf-protocol").value,
     modality: $("pf-vision").checked ? "vision" : "text",
     contextWindow: $("pf-ctx").value.trim(), // 空串 = 清除手动上下文
   };

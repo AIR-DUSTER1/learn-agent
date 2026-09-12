@@ -61,6 +61,11 @@ npm run web                 # http://localhost:3000（PORT 环境变量可改端
 
 - **多供应商**：可添加任意多个供应商档案（名称 + 网关地址 + API Key + 模型），
   列表中一键「启用」切换，顶栏 **▾** 也有快捷切换菜单；
+- **请求协议**：支持四种 AI 请求格式，适配中转站的多协议路由 ——
+  `OpenAI Chat Completions`（默认）、`OpenAI Responses API`、
+  `Anthropic Messages 原生`（如 DeepSeek 的 `https://api.deepseek.com/anthropic`）、
+  `Gemini 原生 generateContent`；非 openai 协议的「获取列表」按各自的端点探测
+  （Anthropic `/v1/models`、Gemini `/v1beta/models`），网关不提供列表时手动填模型名即可；
 - **网关地址 BASE_URL**：任意 OpenAI 兼容网关（中转站 / vLLM / 官方 API）；
 - **API Key**：密文显示、只回传掩码；编辑时留空表示保持不变，清空保存可回到模拟模式；
 - **模型 MODEL**：可点「获取列表 / 测试连接」从网关拉取可用模型下拉选择

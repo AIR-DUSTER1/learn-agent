@@ -408,6 +408,13 @@ Human-in-the-loop 审批按钮、多会话侧栏。**零前端框架、零构建
   启动时校验目录仍在才恢复；
 - **审批交互**：`interrupt` 事件 → 前端渲染批准/拒绝按钮 → `POST /api/resume` →
   服务端 `Command({ resume })` 继续被暂停的图（与 CLI 的 Demo 3 同一条路径）；
+- **多协议模型工厂 `llm.ts`**：供应商档案带 `protocol` 字段（openai / openai-responses /
+  anthropic / gemini），`createChatModel` 据此返回 `ChatOpenAI(useResponsesApi)` /
+  `ChatAnthropic` / `ChatGoogleGenerativeAI` —— 四个客户端都是 LangChain
+  `BaseChatModel`，图的代码不感知协议差异。注意思考型模型（deepseek-flash 等）：
+  Anthropic 系流式用量分散在 message_start / message_delta 两个分片（首片 output=0、
+  末片 input=0），`stream.ts` 按节点累积合并；员工汇报须以 ToolMessage 写回（见 multi.ts），
+  否则「最后一条 assistant 消息缺 reasoning_content」会被网关 400。
 - **外部 Agent 接入 `external.ts`**：在「新建对话」弹窗粘贴一个 Git 仓库地址即可把
   第三方 agent 工具（如 deepseek-harness）接入工作台 —— 服务端 clone 到
   `.setting/agents/`，按 **`agent.json` 清单 → package.json bin/main → 常见入口文件**

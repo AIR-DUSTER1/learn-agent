@@ -19,7 +19,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { config } from "../config.js";
+import { config, isProtocol, type Protocol } from "../config.js";
 import { SETTINGS_FILE, mergeConfig } from "./config-store.js";
 
 interface Provider {
@@ -32,6 +32,12 @@ interface Provider {
   modality?: "text" | "vision";
   /** 手动填写的上下文窗口（tokens）；优先于网关 /models 自动获取的 context_length */
   manualContextWindow?: number;
+  /**
+   * 请求协议：openai（Chat Completions，默认）/ openai-responses（Responses API）/
+   * anthropic（Messages 原生）/ gemini（generateContent 原生）。
+   * 多协议中转站按此决定请求打到 {baseURL} 的哪个路径。
+   */
+  protocol?: Protocol;
 }
 
 let providers: Provider[] = [];
@@ -52,6 +58,7 @@ function applyActiveToConfig(): void {
   config.baseURL = p.baseURL;
   config.apiKey = p.apiKey;
   if (p.model) config.model = p.model;
+  config.protocol = p.protocol ?? "openai";
 }
 
 function activeProvider(): Provider | undefined {
@@ -84,6 +91,9 @@ export async function loadSettings(): Promise<void> {
         baseURL: p.baseURL!.trim().replace(/\/+$/, ""),
         apiKey: typeof p.apiKey === "string" ? p.apiKey : "",
         model: typeof p.model === "string" ? p.model.trim() : "",
+        modality: p.modality === "vision" ? "vision" : "text",
+        manualContextWindow: typeof p.manualContextWindow === "number" ? p.manualContextWindow : undefined,
+        protocol: isProtocol(p.protocol) ? p.protocol : "openai",
       }));
     activeId =
       typeof saved.activeId === "string" && providers.some((p) => p.id === saved!.activeId)
@@ -132,6 +142,7 @@ export interface PublicProvider {
   active: boolean;
   modality: "text" | "vision";
   manualContextWindow: number | null;
+  protocol: Protocol;
 }
 
 export function listProviders(): PublicProvider[] {
@@ -145,6 +156,7 @@ export function listProviders(): PublicProvider[] {
     active: p.id === activeId,
     modality: p.modality ?? "text",
     manualContextWindow: p.manualContextWindow ?? null,
+    protocol: p.protocol ?? "openai",
   }));
 }
 
@@ -158,14 +170,18 @@ export function getActiveId(): string | null {
 
 /** 供应商设置的公共字段解析（新增 / 更新共用） */
 function parseProviderFields(input: {
-  modality?: unknown; contextWindow?: unknown;
-}): { modality?: "text" | "vision"; manualContextWindow?: number } {
-  const out: { modality?: "text" | "vision"; manualContextWindow?: number } = {};
+  modality?: unknown; contextWindow?: unknown; protocol?: unknown;
+}): { modality?: "text" | "vision"; manualContextWindow?: number; protocol?: Protocol } {
+  const out: { modality?: "text" | "vision"; manualContextWindow?: number; protocol?: Protocol } = {};
   if (input.modality === "vision" || input.modality === "text") out.modality = input.modality;
   if (input.contextWindow !== undefined && input.contextWindow !== null && input.contextWindow !== "") {
     const n = Number(input.contextWindow);
     if (!Number.isFinite(n) || n < 1024) throw new Error("上下文窗口需为不小于 1024 的数字（tokens）");
     out.manualContextWindow = Math.round(n);
+  }
+  if (input.protocol !== undefined) {
+    if (!isProtocol(input.protocol)) throw new Error("协议只支持 openai / openai-responses / anthropic / gemini");
+    out.protocol = input.protocol;
   }
   return out;
 }
@@ -173,7 +189,7 @@ function parseProviderFields(input: {
 /** 添加供应商；若是第一个供应商则自动启用 */
 export async function addProvider(input: {
   name?: string; baseURL?: string; apiKey?: string; model?: string;
-  modality?: unknown; contextWindow?: unknown;
+  modality?: unknown; contextWindow?: unknown; protocol?: unknown;
 }): Promise<{ provider: PublicProvider; activeChanged: boolean }> {
   const name = input.name?.trim();
   if (!name) throw new Error("供应商名称不能为空");
@@ -189,6 +205,7 @@ export async function addProvider(input: {
     model: input.model.trim(),
     modality: extra.modality ?? "text",
     manualContextWindow: extra.manualContextWindow,
+    protocol: extra.protocol ?? "openai",
   };
   providers.push(provider);
 
@@ -204,7 +221,7 @@ export async function addProvider(input: {
 /** 更新供应商；apiKey 缺省 = 保持不变，空串 = 清除。改的是启用中的 → 需要重建会话图 */
 export async function updateProvider(id: string, input: {
   name?: string; baseURL?: string; apiKey?: string; model?: string;
-  modality?: unknown; contextWindow?: unknown;
+  modality?: unknown; contextWindow?: unknown; protocol?: unknown;
 }): Promise<{ provider: PublicProvider; activeChanged: boolean }> {
   const p = providers.find((x) => x.id === id);
   if (!p) throw new Error("供应商不存在");
@@ -218,10 +235,14 @@ export async function updateProvider(id: string, input: {
     p.model = input.model.trim();
   }
   if (typeof input.apiKey === "string") p.apiKey = input.apiKey.trim();
-  // 能力/上下文：勾选状态总是提交；上下文空串 = 清除手动值
+  // 能力/上下文/协议：勾选状态总是提交；上下文空串 = 清除手动值
   if (input.modality !== undefined) {
     if (input.modality !== "vision" && input.modality !== "text") throw new Error("modality 只支持 text / vision");
     p.modality = input.modality;
+  }
+  if (input.protocol !== undefined) {
+    if (!isProtocol(input.protocol)) throw new Error("协议只支持 openai / openai-responses / anthropic / gemini");
+    p.protocol = input.protocol;
   }
   if (input.contextWindow !== undefined) {
     if (input.contextWindow === null || input.contextWindow === "") {
@@ -273,6 +294,7 @@ function toPublic(p: Provider): PublicProvider {
     id: p.id, name: p.name, baseURL: p.baseURL, model: p.model,
     hasKey: Boolean(p.apiKey), keyMasked: maskKey(p.apiKey), active: p.id === activeId,
     modality: p.modality ?? "text", manualContextWindow: p.manualContextWindow ?? null,
+    protocol: p.protocol ?? "openai",
   };
 }
 
@@ -323,20 +345,57 @@ export function maskKey(key: string): string {
 /**
  * 用给定（或指定供应商已保存）的网关配置拉取模型列表 —— 同时充当「测试连接」。
  * 优先级：显式 baseURL/apiKey > providerId 对应的已存档案 > 当前启用的供应商。
+ * 按 provider 协议探测模型列表：openai 系、anthropic、gemini 各自的列表端点与鉴权头。
  * 返回 {模型id → 上下文窗口长度} 映射（网关不报 context_length 时值为 undefined）。
  */
-export async function fetchModelDetails(opts: { baseURL?: string; apiKey?: string; providerId?: string }): Promise<Map<string, number | undefined>> {
+export async function fetchModelDetails(opts: { baseURL?: string; apiKey?: string; providerId?: string; protocol?: unknown }): Promise<Map<string, number | undefined>> {
   let url = opts.baseURL?.trim();
   let key = opts.apiKey;
+  let protocol: Protocol | undefined;
   if ((!url || key === undefined) && opts.providerId) {
     const p = providers.find((x) => x.id === opts.providerId);
     if (!p) throw new Error("供应商不存在");
     url = url || p.baseURL;
     key = key !== undefined && key !== "" ? key : p.apiKey;
+    protocol = p.protocol;
   }
   if (!url) url = config.baseURL;
-
+  if (!protocol && opts.protocol !== undefined && isProtocol(opts.protocol)) protocol = opts.protocol;
   const u = validBaseURL(url);
+
+  // ── Anthropic Messages 原生：GET {base}/v1/models，x-api-key 鉴权 ──
+  if (protocol === "anthropic") {
+    const res = await fetch(`${u}/v1/models?limit=100`, {
+      headers: { "x-api-key": key ?? "", "anthropic-version": "2023-06-01" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`网关返回 HTTP ${res.status}（Anthropic 协议：检查地址是否指向 {网关}/anthropic 一类根路径、Key 是否有效）`);
+    const body = await res.json() as { data?: Array<{ id?: string; display_name?: string }> };
+    const details = new Map<string, number | undefined>();
+    for (const m of body.data ?? []) {
+      if (m.id) details.set(m.id, undefined);
+      else if (m.display_name) details.set(m.display_name, undefined);
+    }
+    if (!details.size) throw new Error("网关连接成功，但没有返回任何模型");
+    return details;
+  }
+
+  // ── Gemini 原生：GET {base}/v1beta/models?key=… ──
+  if (protocol === "gemini") {
+    const res = await fetch(`${u}/v1beta/models?pageSize=100&key=${encodeURIComponent(key ?? "")}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`网关返回 HTTP ${res.status}（Gemini 协议：检查地址是否为 {网关} 根路径、Key 是否有效）`);
+    const body = await res.json() as { models?: Array<{ name?: string }> };
+    const details = new Map<string, number | undefined>();
+    for (const m of body.models ?? []) {
+      if (m.name) details.set(m.name.replace(/^models\//, ""), undefined);
+    }
+    if (!details.size) throw new Error("网关连接成功，但没有返回任何模型");
+    return details;
+  }
+
+  // ── OpenAI Chat Completions / Responses API：GET {base}/models ──
   const res = await fetch(`${u}/models`, {
     headers: key ? { Authorization: `Bearer ${key}` } : {},
     signal: AbortSignal.timeout(15_000),
@@ -354,7 +413,7 @@ export async function fetchModelDetails(opts: { baseURL?: string; apiKey?: strin
 }
 
 /** 拉取模型列表的 id 视图（设置页 datalist 用），同时把详情写入缓存 */
-export async function fetchGatewayModels(opts: { baseURL?: string; apiKey?: string; providerId?: string }): Promise<string[]> {
+export async function fetchGatewayModels(opts: { baseURL?: string; apiKey?: string; providerId?: string; protocol?: unknown }): Promise<string[]> {
   const details = await fetchModelDetails(opts);
   const providerId = opts.providerId ?? activeProvider()?.id;
   if (providerId) {

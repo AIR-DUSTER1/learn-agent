@@ -22,7 +22,26 @@ export const config = {
 
   /** 模型名。运行 `npm run models` 可查看网关支持的模型列表 */
   model: process.env.MODEL ?? "gpt-4o-mini",
-};
+
+  /**
+   * 请求协议（多用于中转站的多协议路由）：
+   *   - "openai"           OpenAI Chat Completions（默认，{baseURL}/chat/completions）
+   *   - "openai-responses" OpenAI Responses API（{baseURL}/responses）
+   *   - "anthropic"        Anthropic Messages 原生（{baseURL}/v1/messages，
+   *                        例：DeepSeek 的 https://api.deepseek.com/anthropic）
+   *   - "gemini"           Gemini 原生 generateContent（{baseURL}/v1beta/...）
+   */
+  protocol: process.env.AI_PROTOCOL ?? "openai",
+} as { baseURL: string; apiKey: string; model: string; protocol: Protocol };
+
+export type Protocol = "openai" | "openai-responses" | "anthropic" | "gemini";
+
+export const PROTOCOLS: Protocol[] = ["openai", "openai-responses", "anthropic", "gemini"];
+
+/** 协议合法性校验（settings 落盘前用） */
+export function isProtocol(v: unknown): v is Protocol {
+  return typeof v === "string" && (PROTOCOLS as string[]).includes(v);
+}
 
 /** 启动前校验配置是否齐全，缺 Key 时给出明确提示并退出 */
 export function assertConfig(): void {

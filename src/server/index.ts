@@ -269,6 +269,7 @@ const server = createServer(async (req, res) => {
         mock: !config.apiKey,
         model: config.model,
         baseURL: config.baseURL,
+        protocol: config.protocol,
         hasKey: Boolean(config.apiKey),
         keyMasked: maskKey(config.apiKey),
         providers: listProviders(),
@@ -352,16 +353,17 @@ const server = createServer(async (req, res) => {
     }
 
     // 拉取网关模型列表（兼「测试连接」）：
-    // { providerId } 用已存档案的 Key 测试 / { baseURL, apiKey } 用表单里未保存的值测试
+    // { providerId } 用已存档案的 Key 测试 / { baseURL, apiKey, protocol } 用表单里未保存的值测试
     if (pathname === "/api/models" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}") as {
-        baseURL?: unknown; apiKey?: unknown; providerId?: unknown;
+        baseURL?: unknown; apiKey?: unknown; providerId?: unknown; protocol?: unknown;
       };
       try {
         const models = await fetchGatewayModels({
           baseURL: typeof body.baseURL === "string" && body.baseURL.trim() ? body.baseURL : undefined,
           apiKey: typeof body.apiKey === "string" ? body.apiKey : undefined,
           providerId: typeof body.providerId === "string" ? body.providerId : undefined,
+          protocol: body.protocol,
         });
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ ok: true, models, contextWindow: getContextWindowForActive() ?? null }));

@@ -54,12 +54,16 @@ function contentText(content: BaseMessage["content"]): string {
  * 标准路径是 usage_metadata（@langchain/openai 由网关的 usage 字段映射而来，
  * input_token_details.cache_read 即「提示词缓存命中」）；
  * 再兜底兼容 response_metadata.tokenUsage / additional_kwargs.tokenUsage 旧形状。
+ *
+ * 注意流式分片：Anthropic 系网关在 message_start 只给 input_tokens（output=0），
+ * 最终 output_tokens 在后面的 message_delta 里且不含 input —— 所以调用方必须
+ * 按「节点内累积合并」处理本函数的分片结果（见 runGraphEvents 的 usageAccum）。
  */
 function extractUsage(msg: unknown): {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
 } | null {
   if (!msg || typeof msg !== "object") return null;
   const m = msg as {
@@ -73,28 +77,50 @@ function extractUsage(msg: unknown): {
     additional_kwargs?: { tokenUsage?: Record<string, unknown> };
   };
   const um = m.usage_metadata;
-  if (um && typeof um.input_tokens === "number" && um.input_tokens > 0) {
+  if (um && (typeof um.input_tokens === "number" || typeof um.output_tokens === "number")) {
     return {
       inputTokens: um.input_tokens,
-      outputTokens: um.output_tokens ?? 0,
-      totalTokens: um.total_tokens ?? um.input_tokens + (um.output_tokens ?? 0),
-      cacheReadTokens: um.input_token_details?.cache_read ?? 0,
+      outputTokens: um.output_tokens,
+      totalTokens: um.total_tokens,
+      cacheReadTokens: um.input_token_details?.cache_read,
     };
   }
   const tu = (m.response_metadata?.tokenUsage ?? m.additional_kwargs?.tokenUsage) as
     | { promptTokens?: number; prompt_tokens?: number; completionTokens?: number; completion_tokens?: number; totalTokens?: number; total_tokens?: number; cacheReadTokens?: number; cache_read?: number }
     | undefined;
   const input = tu?.promptTokens ?? tu?.prompt_tokens;
+  const output = tu?.completionTokens ?? tu?.completion_tokens;
   if (typeof input === "number" && input > 0) {
-    const output = tu?.completionTokens ?? tu?.completion_tokens ?? 0;
     return {
       inputTokens: input,
       outputTokens: output,
-      totalTokens: tu?.totalTokens ?? tu?.total_tokens ?? input + output,
-      cacheReadTokens: tu?.cacheReadTokens ?? tu?.cache_read ?? 0,
+      totalTokens: tu?.totalTokens ?? tu?.total_tokens ?? input + (output ?? 0),
+      cacheReadTokens: tu?.cacheReadTokens ?? tu?.cache_read,
     };
   }
+  if (typeof output === "number" && output > 0) {
+    return { outputTokens: output };
+  }
   return null;
+}
+
+/** 用量分片合并：分片里的 0 值 / 缺失字段不覆盖已有值（Anthropic 末片 input=0、首片 output=0） */
+function mergeUsage(
+  acc: { inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number } | null,
+  next: { inputTokens?: number; outputTokens?: number; totalTokens?: number; cacheReadTokens?: number } | null
+) {
+  if (!next) return acc;
+  const pick = (a: number | undefined, b: number | undefined) =>
+    b !== undefined && b > 0 ? b : a ?? 0;
+  const input = pick(acc?.inputTokens, next.inputTokens);
+  const output = pick(acc?.outputTokens, next.outputTokens);
+  const total = input > 0 && output > 0 ? input + output : pick(acc?.totalTokens, next.totalTokens);
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: total,
+    cacheReadTokens: pick(acc?.cacheReadTokens, next.cacheReadTokens),
+  };
 }
 
 /** 从 messages 模式的 metadata 里取出可读的节点标签（子图显示为 "父节点/内层节点"） */
@@ -157,6 +183,9 @@ export async function* runGraphEvents(
   let streamedSinceBoundary = false;     // 距上个「边界消息」（工具结果等）是否已有流式文本
   let toolSeq = 0;                       // 网关不给 tool_call id 时兜底编号
   const toolIds = new Map<number, string>(); // tool_call_chunks 的 index → 事件 id
+  // 用量分片累积（Anthropic 系 input/output 分片到达）；切换节点时重置，避免跨节点污染
+  let usageAccum: { inputTokens: number; outputTokens: number; totalTokens: number; cacheReadTokens: number } | null = null;
+  let usageNode: string | undefined;
 
   for await (const tagged of stream) {
     if (options.signal?.aborted) return;
@@ -171,9 +200,10 @@ export async function* runGraphEvents(
       const node = nodeLabel(meta);
 
       if (msg instanceof AIMessageChunk) {
-        // -- token 用量（流式 chunk 在 OpenAI 兼容网关上通常由最后一个 chunk 携带）--
-        const usage = extractUsage(msg);
-        if (usage) yield { type: "usage", ...usage };
+        // -- token 用量（分片累积合并；Anthropic 系 input/output 分散在多个 chunk）--
+        if (node !== usageNode) { usageAccum = null; usageNode = node; }
+        usageAccum = mergeUsage(usageAccum, extractUsage(msg));
+        if (usageAccum) yield { type: "usage", ...usageAccum };
         // -- 文本 token --
         const text = contentText(msg.content);
         if (text) {
@@ -249,8 +279,9 @@ export async function* runGraphEvents(
           }
           if (msg instanceof AIMessage) {
             // 用量在去重前提取：即使这条消息因「子图回显」被跳过，它携带的用量依然有效
-            const usage = extractUsage(msg);
-            if (usage) yield { type: "usage", ...usage };
+            if (nodeKey !== usageNode) { usageAccum = null; usageNode = nodeKey; }
+            usageAccum = mergeUsage(usageAccum, extractUsage(msg));
+            if (usageAccum) yield { type: "usage", ...usageAccum };
             const text = contentText(msg.content);
             if (!text) continue;
             if (msg.id && streamedIds.has(msg.id)) continue; // 已流式输出过 → 去重

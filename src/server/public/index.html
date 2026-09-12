@@ -171,6 +171,16 @@
         <datalist id="model-list"></datalist>
       </label>
 
+        <label class="field">
+          <span class="field-label">请求协议 <em class="key-state">中转站多协议路由时按此决定请求路径</em></span>
+          <select id="pf-protocol" class="pf-select">
+            <option value="openai">OpenAI Chat Completions（默认 · /chat/completions）</option>
+            <option value="openai-responses">OpenAI Responses API（/responses）</option>
+            <option value="anthropic">Anthropic Messages 原生（/v1/messages）</option>
+            <option value="gemini">Gemini 原生 generateContent（/v1beta）</option>
+          </select>
+        </label>
+
       <label class="field">
         <span class="field-label">能力与上下文</span>
         <div class="cap-row">
