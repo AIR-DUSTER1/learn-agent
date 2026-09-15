@@ -22,24 +22,27 @@ import { createChatModel } from "../llm.js";
 import { calculator, getCurrentTime, getWeather } from "../tools.js";
 
 // ---------------------------------------------------------------------------
-// 1. 准备模型：把工具「绑定」到模型上，模型才知道可以调用这些函数
+// 1. 工具清单：把工具「绑定」到模型上，模型才知道可以调用这些函数
+//    ★ 模型在建图时（createBasicGraph 内）创建 —— Web 端修改供应商/模型后，
+//      新建的会话会自动使用新配置，而无需重启进程
 // ---------------------------------------------------------------------------
 const tools = [calculator, getCurrentTime, getWeather];
-const model = createChatModel().bindTools(tools);
 
 // ---------------------------------------------------------------------------
 // 2. 节点 1「agent」：把整段对话历史交给模型，让模型决定「直接回答」还是「调用工具」
 //    返回值 { messages: [response] } 会按 State 的 reducer 追加到消息列表
 // ---------------------------------------------------------------------------
-async function agentNode(state: typeof MessagesAnnotation.State) {
-  const response = await model.invoke(state.messages);
-  return { messages: [response] };
-}
-
-// ---------------------------------------------------------------------------
-// 3. 搭图：把节点和边组织成一张有向图，compile() 之后才能调用
-// ---------------------------------------------------------------------------
 export function createBasicGraph() {
+  const model = createChatModel().bindTools(tools);
+
+  async function agentNode(state: typeof MessagesAnnotation.State) {
+    const response = await model.invoke(state.messages);
+    return { messages: [response] };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 3. 搭图：把节点和边组织成一张有向图，compile() 之后才能调用
+  // ---------------------------------------------------------------------------
   const graph = new StateGraph(MessagesAnnotation)
     // -- 注册节点 --
     .addNode("agent", agentNode)

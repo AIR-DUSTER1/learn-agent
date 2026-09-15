@@ -18,3 +18,12 @@ dist/
 
 # ZCode 内部文件
 .zcode/
+
+# Playwright 测试产物
+.playwright-mcp/
+
+# Web 设置页保存的供应商/模型覆盖配置（含 API Key，绝不提交）
+.web-config.json
+
+# ZCode 本地目录（日志/临时脚本）
+.setting/
