@@ -18,15 +18,20 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import type { MessageContent } from "@langchain/core/messages";
-import { HumanMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, AIMessageChunk, ToolMessage } from "@langchain/core/messages";
 import { assertConfig } from "./config.js";
 import { createBasicGraph } from "./agent/basic.js";
 import { createMemoryGraph } from "./agent/memory.js";
 import { createHitlGraph, buildResumeCommand } from "./agent/hitl.js";
 import type { ApprovalRequest } from "./agent/hitl.js";
 import { createMultiAgentGraph } from "./agent/multi.js";
+import { createParallelGraph, parseSubjects } from "./agent/parallel.js";
 
 type Rl = ReturnType<typeof createInterface>;
+
+// ANSI 颜色（思考过程用暗灰色区分正文）
+const DIM = "\x1b[2m";
+const RESET = "\x1b[0m";
 
 // ---------------------------------------------------------------------------
 // 小工具：把消息内容转成纯文本（兼容字符串 / 内容块数组两种格式）
@@ -79,54 +84,101 @@ const isQuit = (line: string) => /^(exit|quit|q|退出|结束)$/i.test(line.trim
  * 子图（Demo 4）的事件键可能是 "researcher:agent" 这种嵌套/带冒号的形状，
  * 所以这里做递归展开，保证任何深度都能打印出来。
  */
-// 子图会把「进入子图前已经存在于 state 里的消息」在更新里再回显一遍，
-// 这些消息与之前打印过的是同一个对象（id 相同），记录已打印 id 即可去重。
-// 再配合「消息计数游标」：子图回显的是完整历史，只打印游标之后的新消息。
+// 子图会把「进入子图前已经存在于 state 里的消息」在更新里再回显一遍。
+// 注意两种事件的数组含义不同，不能用「计数游标」统一处理：
+//   普通节点更新 = 只含该节点新增的消息；子图完成事件 = 回显完整历史。
+// 所以只按「消息 id 去重」：回显的消息与已打印的是同一个对象（id 相同），直接跳过。
 const printedMessageIds = new Set<string>();
-let seenMessageCount = 0;
 
-/** 把某个节点更新里「真正新增」的消息收集成日志行（不直接打印，便于外层判断有没有内容） */
+// ---------------------------------------------------------------------------
+// token 级流式打印状态机（streamMode: "messages" 的增量 chunk）
+// 思考过程（reasoning_content）用暗灰色，正文（content）正常颜色逐字打出
+// ---------------------------------------------------------------------------
+let tokenPhase: "none" | "reasoning" | "answer" = "none";
+let tokensReceived = 0;
+
+interface StreamChunkLike {
+  content?: unknown;
+  additional_kwargs?: { reasoning_content?: string };
+}
+
+function printTokenChunk(chunk: StreamChunkLike | undefined): void {
+  if (!chunk) return;
+  const reasoning = chunk.additional_kwargs?.reasoning_content;
+  if (typeof reasoning === "string" && reasoning) {
+    if (tokenPhase !== "reasoning") {
+      if (tokenPhase === "answer") process.stdout.write("\n");
+      process.stdout.write(`${DIM}\n💭 思考：`);
+      tokenPhase = "reasoning";
+    }
+    process.stdout.write(reasoning);
+    return;
+  }
+  const text = chunk.content;
+  if (typeof text === "string" && text) {
+    if (tokenPhase !== "answer") {
+      if (tokenPhase === "reasoning") process.stdout.write(`${RESET}`);
+      process.stdout.write(`\n🤖 `);
+      tokenPhase = "answer";
+    }
+    process.stdout.write(text);
+    tokensReceived++;
+  }
+}
+
+/**
+ * 把某个节点更新里「真正新增」的消息收集成日志行（不直接打印，便于外层判断有没有内容）。
+ * skipAiText：token 流式开启时，AI 的正文已在上面逐字打过，这里跳过避免重复
+ */
 function collectUpdateLines(
   key: string,
   update: Record<string, unknown>,
-  out: string[]
+  out: string[],
+  skipAiText = false
 ): void {
   const messages = update.messages as unknown;
   if (Array.isArray(messages)) {
-    // 只用 index 从 seenMessageCount 起打印 → 跳过子图回显的整段历史
-    for (let i = seenMessageCount; i < messages.length; i++) {
-      const msg = messages[i] as AIMessage | ToolMessage;
+    // 开启 messages 流模式后，updates 里的可能是 AIMessageChunk（流式累积对象）而非
+    // 最终的 AIMessage，v1 中两者没有继承关系，需要一并判断
+    const isAI = (m: unknown) => m instanceof AIMessage || m instanceof AIMessageChunk;
+    for (const raw of messages) {
+      const msg = raw as AIMessage | AIMessageChunk | ToolMessage;
       // 跳过 HumanMessage：节点输出的更新里出现它，通常是子图把输入消息回显了一遍，
       // 用户输入在 CLI 里已经打印过，这里只展示 AI/工具消息，避免重复
       if (msg instanceof HumanMessage) continue;
-      if (msg.id && printedMessageIds.has(msg.id)) continue; // 回显 → 已打印过
+      if (msg.id && printedMessageIds.has(msg.id)) continue; // 子图回显 → 已打印过
       if (msg.id) printedMessageIds.add(msg.id);
-      if (msg instanceof AIMessage && msg.tool_calls?.length) {
-        const calls = msg.tool_calls
+      const toolCalls = (msg as AIMessage).tool_calls;
+      if (isAI(msg) && toolCalls?.length) {
+        const calls = toolCalls
           .map((c) => `${c.name}(${JSON.stringify(c.args)})`)
           .join(", ");
         out.push(`   🔧 [${key}] 模型请求调用工具: ${calls}`);
       } else if (msg instanceof ToolMessage && msg.content) {
         out.push(`   📦 [${key}] 工具返回: ${fmtContent(msg.content).slice(0, 140)}`);
-      } else if (msg.content) {
-        const icon = msg instanceof AIMessage ? "🤖" : "👤";
+      } else if (msg.content && !skipAiText) {
+        const icon = isAI(msg) ? "🤖" : "👤";
         out.push(`   ${icon} [${key}] ${fmtContent(msg.content).slice(0, 400)}`);
       }
     }
-    // 推进游标（子图回显的历史可能比游标长，取 max 避免回退）
-    seenMessageCount = Math.max(seenMessageCount, messages.length);
     return;
   }
   // 嵌套结构（子图）：继续往下展开
   for (const [childKey, child] of Object.entries(update)) {
     if (child && typeof child === "object") {
-      collectUpdateLines(`${key}:${childKey}`, child as Record<string, unknown>, out);
+      collectUpdateLines(`${key}:${childKey}`, child as Record<string, unknown>, out, skipAiText);
     }
   }
 }
 
 /**
- * 以「逐节点更新」模式跑一张图并实时打印。
+ * 以流式方式跑一张图并实时打印。
+ *
+ * streamTokens: true 时同时订阅两种流模式（LangGraph v1 数组模式输出 [模式名, 载荷]）：
+ *   "messages" → token 级增量：思考过程（灰色）+ 正文逐字打出（打字机效果）
+ *   "updates"  → 节点级更新：工具调用/工具结果/子图进度 + __interrupt__ 审批事件
+ * 此时 updates 里的 AI 正文会被跳过（token 已逐字打过，避免重复）。
+ *
  * 若遇到 interrupt() 暂停（Demo 3），停止打印并返回暂停信息给调用方处理。
  */
 async function streamGraph(
@@ -134,30 +186,61 @@ async function streamGraph(
   // 用 any 收窄会互相冲突；这里只需要 .stream() 方法，直接按鸭子类型用 any
   graph: any,
   input: Record<string, unknown>,
-  threadId: string
+  threadId: string,
+  opts: { streamTokens?: boolean } = {}
 ): Promise<{ value: ApprovalRequest } | null> {
   // 注意：LangGraph v1 的 stream(input, options) 只有两个参数，
   // streamMode 和 configurable 都合并到 options 里传
   const stream = await graph.stream(input, {
-    streamMode: "updates",
+    streamMode: opts.streamTokens ? ["updates", "messages"] : "updates",
     configurable: { thread_id: threadId },
   });
-  // 每轮对话独立重置打印游标（子图回显去重用）
+  // 每轮对话独立重置打印记录（消息 id 去重用）
   printedMessageIds.clear();
-  seenMessageCount = 0;
-  for await (const event of stream) {
-    if ("__interrupt__" in event) {
-      return (event as { __interrupt__: Array<{ value: ApprovalRequest }> }).__interrupt__[0];
+  tokenPhase = "none";
+  tokensReceived = 0;
+
+  // 处理一个 updates 载荷；若包含 __interrupt__ 返回审批请求
+  const handleUpdates = (payload: Record<string, unknown>) => {
+    if ("__interrupt__" in payload) {
+      return (payload as { __interrupt__: Array<{ value: ApprovalRequest }> }).__interrupt__[0];
     }
-    for (const [node, update] of Object.entries(event)) {
+    for (const [node, update] of Object.entries(payload)) {
       const lines: string[] = [];
-      collectUpdateLines(node, update as Record<string, unknown>, lines);
+      // token 已流式打出时跳过 AI 正文行，避免同一句话打印两遍
+      collectUpdateLines(node, update as Record<string, unknown>, lines, tokensReceived > 0);
       if (lines.length) {
         console.log(`\n── 节点执行: ${node} ──`);
         for (const line of lines) console.log(line);
       }
     }
+    return null;
+  };
+
+  for await (const event of stream) {
+    if (Array.isArray(event)) {
+      // 数组模式：event = [模式名, 载荷]
+      const [mode, payload] = event as [string, unknown];
+      if (mode === "messages" && opts.streamTokens) {
+        const [chunk] = payload as [StreamChunkLike, unknown];
+        printTokenChunk(chunk);
+      } else if (mode === "updates") {
+        const interrupted = handleUpdates(payload as Record<string, unknown>);
+        if (interrupted) {
+          if (tokenPhase !== "none") process.stdout.write("\n");
+          return interrupted;
+        }
+      }
+    } else {
+      // 单模式 updates：载荷直接就是事件
+      const interrupted = handleUpdates(event as Record<string, unknown>);
+      if (interrupted) {
+        if (tokenPhase !== "none") process.stdout.write("\n");
+        return interrupted;
+      }
+    }
   }
+  if (tokenPhase !== "none") process.stdout.write(tokenPhase === "reasoning" ? RESET + "\n" : "\n");
   return null;
 }
 
@@ -175,7 +258,7 @@ async function demo1(question: string): Promise<void> {
 ============================================================`);
   const graph = createBasicGraph();
   console.log(`\n🧪 输入: ${question}\n`);
-  await streamGraph(graph, { messages: [new HumanMessage(question)] }, "demo1");
+  await streamGraph(graph, { messages: [new HumanMessage(question)] }, "demo1", { streamTokens: true });
   console.log("\n✅ Demo 1 完成（未配 checkpointer → 图不保留任何记忆）");
 }
 
@@ -200,7 +283,7 @@ async function demo2(rl: Rl): Promise<void> {
     const line = await reader.next();
     if (line === null || isQuit(line)) break;
     console.log("");
-    await streamGraph(graph, { messages: [new HumanMessage(line)] }, threadId);
+    await streamGraph(graph, { messages: [new HumanMessage(line)] }, threadId, { streamTokens: true });
   }
   console.log("\n✅ Demo 2 结束（进程退出后 MemorySaver 中的记忆即丢失）");
 }
@@ -227,7 +310,7 @@ async function demo3(rl: Rl): Promise<void> {
     if (line === null || isQuit(line)) break;
     console.log("");
 
-    const interrupted = await streamGraph(graph, { messages: [new HumanMessage(line)] }, threadId);
+    const interrupted = await streamGraph(graph, { messages: [new HumanMessage(line)] }, threadId, { streamTokens: true });
     if (interrupted) {
       const req = interrupted.value;
       console.log(`\n⏸️  图已暂停，等待人工审批（输入 y / 是 批准，n / 否 拒绝）：
@@ -268,8 +351,44 @@ async function demo4(task: string): Promise<void> {
 ============================================================`);
   const graph = createMultiAgentGraph();
   console.log(`\n🧪 任务: ${task}\n`);
-  await streamGraph(graph, { messages: [new HumanMessage(task)] }, "demo4");
+  await streamGraph(graph, { messages: [new HumanMessage(task)] }, "demo4", { streamTokens: true });
   console.log("\n✅ Demo 4 完成");
+}
+
+// ---------------------------------------------------------------------------
+// Demo 5：并行 map-reduce —— Send API 动态分发 + 自定义 State/reducer
+// ---------------------------------------------------------------------------
+async function demo5(subjectsRaw: string | undefined): Promise<void> {
+  const subjects = parseSubjects(subjectsRaw);
+  console.log(`
+============================================================
+ Demo 5：并行 map-reduce（Send API + 自定义 State）
+ 概念：Annotation.Root 自定义状态字段；reducer 合并并行结果；
+       条件边返回 Send[] 实现动态 fan-out；全部完成后自动 fan-in。
+ 流程：START ─Send×${subjects.length} 并行分发→ ${subjects.length} 个 worker 同时跑
+       → 全部完成 → combine 汇总 → END
+ 提示：本 demo 故意不开 token 流式 —— 多个 worker 的 token 会交错，
+       用「节点完成」视角反而更能看清并行结构。
+ 详细注释：src/agent/parallel.ts
+============================================================`);
+  const graph = createParallelGraph();
+  console.log(`\n🧪 主题列表: ${subjects.join("、")}\n`);
+
+  const startAt = Date.now();
+  // 直接按 updates 事件观察：worker 的 results 到一条打印一条，combine 的 summary 最后到
+  const stream = await graph.stream({ subjects }, { streamMode: "updates" });
+  for await (const event of stream) {
+    for (const [node, update] of Object.entries(event as Record<string, unknown>)) {
+      const u = update as { results?: string[]; summary?: string };
+      if (node === "worker" && Array.isArray(u.results)) {
+        for (const r of u.results) console.log(`   ⚙️  [worker] ${r}`);
+      } else if (node === "combine" && typeof u.summary === "string") {
+        console.log(`\n   📝 [combine] 汇总文案：\n${u.summary}`);
+      }
+    }
+  }
+  console.log(`\n⏱️  总耗时 ${((Date.now() - startAt) / 1000).toFixed(1)}s（${subjects.length} 个 worker 并行执行）`);
+  console.log("\n✅ Demo 5 完成");
 }
 
 // ---------------------------------------------------------------------------
@@ -291,9 +410,10 @@ async function main(): Promise<void> {
    2. 对话记忆 —— Checkpointer + thread_id 多轮记忆
    3. Human-in-the-loop —— interrupt() 暂停 + 人工审批
    4. 多 Agent 协作 —— Supervisor 主管 + 员工子图
+   5. 并行 map-reduce —— Send API + 自定义 State/reducer
 --------------------------------------------`);
     try {
-      const ans = await rl.question("请选择 Demo 编号 (1-4) > ");
+      const ans = await rl.question("请选择 Demo 编号 (1-5) > ");
       await runDemo(Number(ans), rl);
     } catch {
       // 管道输入时 question() 可能因 EOF 直接失败，给出用法提示
@@ -322,8 +442,12 @@ async function runDemo(n: number, rl: Rl): Promise<void> {
     case 4:
       await demo4(userArg ?? "帮我查一下北京的天气，然后写一首关于它的四行诗");
       break;
+    case 5:
+      // 第三个参数是自定义主题列表，例如：tsx src/cli.ts 5 "咖啡, 露营, 极光"
+      await demo5(userArg);
+      break;
     default:
-      console.error(`未知 Demo 编号: ${n}（支持 1-4）`);
+      console.error(`未知 Demo 编号: ${n}（支持 1-5）`);
       process.exitCode = 1;
   }
 }

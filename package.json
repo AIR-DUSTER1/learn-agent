@@ -9,6 +9,7 @@
     "demo:2": "tsx src/cli.ts 2",
     "demo:3": "tsx src/cli.ts 3",
     "demo:4": "tsx src/cli.ts 4",
+    "demo:5": "tsx src/cli.ts 5",
     "start": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit"
   },
