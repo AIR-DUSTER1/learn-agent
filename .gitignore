@@ -7,6 +7,8 @@ node_modules/
 # 构建产物
 dist/
 *.tsbuildinfo
+# 本地跑服务的临时打包产物（esbuild 输出，仅供自检/调试）
+src/server/.dev-server.mjs
 
 # 日志
 *.log

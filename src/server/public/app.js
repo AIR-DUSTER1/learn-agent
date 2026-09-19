@@ -1362,9 +1362,8 @@ function openModal() { $("modal-mask").classList.remove("hidden"); }
 function closeModal() { $("modal-mask").classList.add("hidden"); }
 
 /* ---------------------------------------------------------------------------
- * 设置（多供应商管理：添加 / 编辑 / 删除 / 切换）
+ * 设置（多供应商 × 多模型：添加 / 编辑 / 删除 / 切换 + 思考等级）
  * ------------------------------------------------------------------------- */
-let editingProviderId = null; // null = 新增模式，否则为正在编辑的供应商 id
 
 /** 顶栏按钮 / 侧栏 / 徽章的统一刷新 */
 function applyConfigState(cfg) {
@@ -1373,15 +1372,27 @@ function applyConfigState(cfg) {
   $("mode-badge").classList.toggle("hidden", !mock);
   const sideModel = $("side-model");
   sideModel.classList.toggle("mock", mock);
-  $("side-model-text").textContent = mock ? `模拟模式 · ${cfg.model}` : cfg.model;
   const active = (cfg.providers || []).find((p) => p.active);
+  const activeModel = (active?.models || []).find((m) => m.active);
+  const modelLabel = activeModel?.displayName || cfg.model;
+  $("side-model-text").textContent = mock ? `模拟模式 · ${cfg.model}` : `${active ? active.name + " · " : ""}${modelLabel}`;
   const btnText = $("provider-btn-text");
   if (btnText) btnText.textContent = mock
     ? `模拟模式 · ${cfg.model}`
-    : `${active?.modality === "vision" ? "🖼 " : ""}${active ? active.name + " · " : ""}${cfg.model}`;
+    : `${activeModel?.modality === "vision" ? "🖼 " : ""}${modelLabel}`;
+  const reasonBadge = $("provider-btn-reason");
+  if (reasonBadge) {
+    const tag = activeModel && activeModel.reasoningLevel !== "default" ? activeModel.reasoningLabel : "";
+    reasonBadge.textContent = tag;
+    reasonBadge.classList.toggle("hidden", !tag);
+    reasonBadge.title = tag ? `当前思考等级：${tag}` : "";
+  }
   renderProviderMenu();
   updateContextBar();
-  if (!$("settings-mask").classList.contains("hidden")) renderProviderList();
+  if (!$("settings-mask").classList.contains("hidden")) {
+    renderProviderList();
+    if (!$("provider-form-wrap").classList.contains("hidden")) renderModelPanel();
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1442,39 +1453,146 @@ function updateTurnCaption(ablock) {
   el.textContent = `↑ ${u.lastInput.toLocaleString("zh-CN")} · ↓ ${u.lastOutput.toLocaleString("zh-CN")}${cache}`;
 }
 
-/* ----- 顶栏快捷切换菜单 ----- */
+/* ----- 顶栏快捷切换菜单：模型菜单（按供应商分组）+ 思考等级档位 ----- */
 function showProviderMenu(show) {
   $("provider-menu").classList.toggle("hidden", !show);
 }
 
+/** 思考等级角标：供应商默认时不显示，避免噪音 */
+function reasoningTag(model) {
+  return model?.reasoningLevel && model.reasoningLevel !== "default" ? model.reasoningLabel : "";
+}
+
+/**
+ * 顶栏 ▾ 菜单 = 「所有供应商的所有模型」清单。
+ * 旧版这里只列供应商、每个供应商只挂一个模型，于是「同一个网关下的第二个模型」
+ * 根本没有入口（下拉里看起来只有一个模型）—— 现在按供应商分组列出全部模型，
+ * 点任意一行即切换「供应商 + 模型」，并在顶部给出当前模型的思考等级档位。
+ */
 function renderProviderMenu() {
   const menu = $("provider-menu");
   menu.innerHTML = "";
-  for (const p of state.config?.providers || []) {
-    const b = document.createElement("button");
-    b.className = "pm-item" + (p.active ? " active" : "");
-    b.innerHTML = `<span class="pm-check">${p.active ? "✓" : ""}</span><span class="pm-name"></span><span class="pm-model"></span>`;
-    b.querySelector(".pm-name").textContent = p.name;
-    b.querySelector(".pm-model").textContent = p.model || "未设置模型";
-    b.addEventListener("click", async () => {
-      showProviderMenu(false);
-      if (!p.active) await activateProvider(p.id);
-    });
-    menu.appendChild(b);
+  const cfg = state.config || {};
+  const providers = cfg.providers || [];
+  const activeProvider = providers.find((p) => p.active);
+  const activeModel = (activeProvider?.models || []).find((m) => m.active);
+
+  // ── ① 当前模型的思考等级：档位 chips（档位随供应商方言变化）──
+  const r = cfg.reasoning;
+  if (r && activeModel) {
+    const box = document.createElement("div");
+    box.className = "pm-reason-box";
+
+    const head = document.createElement("div");
+    head.className = "pm-reason-head";
+    const title = document.createElement("span");
+    title.textContent = `⚡ ${activeModel.displayName} · 思考等级`;
+    const now = document.createElement("em");
+    now.className = "pm-reason-now";
+    now.textContent = r.label;
+    now.title = r.scheme;
+    head.append(title, now);
+    box.appendChild(head);
+
+    const chips = document.createElement("div");
+    chips.className = "pm-chips";
+    for (const lv of r.levels || []) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "pm-chip" + (lv.id === r.level ? " active" : "");
+      chip.textContent = lv.label;
+      chip.title = lv.desc;
+      chip.addEventListener("click", (e) => { e.stopPropagation(); setReasoningLevel(lv.id); });
+      chips.appendChild(chip);
+    }
+    box.appendChild(chips);
+
+    const scheme = document.createElement("div");
+    scheme.className = "pm-scheme";
+    scheme.textContent = (r.auto ? `自动识别为「${r.dialectLabel}」（${r.vendor}）· ` : "") + r.scheme;
+    box.appendChild(scheme);
+    if (r.error) {
+      const err = document.createElement("div");
+      err.className = "pm-scheme err";
+      err.textContent = `⚠ ${r.error}`;
+      box.appendChild(err);
+    }
+    menu.appendChild(box);
   }
+
+  // ── ② 供应商分组 → 组内每个模型一行 ──
+  for (const p of providers) {
+    const group = document.createElement("div");
+    group.className = "pm-group";
+
+    const head = document.createElement("div");
+    head.className = "pm-group-head";
+    const gname = document.createElement("span");
+    gname.className = "pm-g-name";
+    gname.textContent = p.name;
+    gname.title = p.baseURL;
+    head.appendChild(gname);
+    if (p.protocol && p.protocol !== "openai") {
+      const proto = document.createElement("span");
+      proto.className = "pm-g-badge";
+      proto.textContent = PROTOCOL_LABEL[p.protocol] || p.protocol;
+      head.appendChild(proto);
+    }
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "pm-g-edit";
+    edit.textContent = "编辑";
+    edit.title = "在设置里编辑这个供应商与它的模型";
+    edit.addEventListener("click", (e) => { e.stopPropagation(); showProviderMenu(false); openSettings(p.id); });
+    head.appendChild(edit);
+    group.appendChild(head);
+
+    if (!p.models || !p.models.length) {
+      const empty = document.createElement("div");
+      empty.className = "pm-empty";
+      empty.textContent = "还没有模型 —— 点「编辑」添加";
+      group.appendChild(empty);
+    }
+
+    for (const m of p.models || []) {
+      const current = Boolean(p.active) && Boolean(m.active);
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "pm-item" + (current ? " active" : "");
+      row.title = `${m.name} · ${p.baseURL}\n思考等级：${m.reasoningLabel}（${m.reasoningDialect}）`;
+      row.innerHTML = `<span class="pm-check">${current ? "✓" : ""}</span>`
+        + `<span class="pm-name"></span>`
+        + `<span class="pm-model"></span>`;
+      row.querySelector(".pm-name").textContent = `${m.modality === "vision" ? "🖼 " : ""}${m.displayName}`;
+      const tag = reasoningTag(m);
+      const right = row.querySelector(".pm-model");
+      right.textContent = tag || (m.displayName === m.name ? "" : m.name);
+      if (tag) right.classList.add("hot");
+      row.addEventListener("click", async () => {
+        showProviderMenu(false);
+        if (!current) await activateModel(p.id, m.id);
+      });
+      group.appendChild(row);
+    }
+    menu.appendChild(group);
+  }
+
   const divider = document.createElement("div");
   divider.className = "pm-divider";
   menu.appendChild(divider);
   const manage = document.createElement("button");
   manage.className = "pm-item pm-manage";
-  manage.textContent = "⚙ 管理供应商（添加 / 编辑 / 删除）";
+  manage.textContent = "⚙ 管理供应商与模型（添加 / 编辑 / 删除）";
   manage.addEventListener("click", () => { showProviderMenu(false); openSettings(); });
   menu.appendChild(manage);
 }
 
-/* ----- 设置弹窗：供应商列表 ----- */
-function openSettings() {
+/* ----- 设置弹窗：供应商列表 + 每个供应商的模型 ----- */
+let settingsFocusProviderId = null; // 从菜单「编辑」进来时高亮的供应商
+
+function openSettings(focusProviderId) {
   showProviderMenu(false);
+  settingsFocusProviderId = focusProviderId || null;
   api("/api/config").then(applyConfigState).catch(() => {});
   closeProviderForm();
   $("settings-mask").classList.remove("hidden");
@@ -1486,10 +1604,11 @@ function renderProviderList() {
   const providers = state.config?.providers || [];
   for (const p of providers) {
     const row = document.createElement("div");
-    row.className = "provider-row" + (p.active ? " active" : "");
+    row.className = "provider-row" + (p.active ? " active" : "")
+      + (settingsFocusProviderId === p.id ? " focused" : "");
     row.innerHTML = `
       <div class="p-info">
-        <div class="p-name"><span class="nm"></span><span class="p-badge ${p.hasKey ? "" : "nokey"}">${p.hasKey ? "✓ Key" : "无 Key"}</span>${p.modality === "vision" ? '<span class="p-badge vis">多模态</span>' : ""}${p.protocol && p.protocol !== "openai" ? `<span class="p-badge proto">${PROTOCOL_LABEL[p.protocol] || p.protocol}</span>` : ""}${p.active ? '<span class="p-badge">启用中</span>' : ""}</div>
+        <div class="p-name"><span class="nm"></span><span class="p-badge ${p.hasKey ? "" : "nokey"}">${p.hasKey ? "✓ Key" : "无 Key"}</span>${p.protocol && p.protocol !== "openai" ? `<span class="p-badge proto">${PROTOCOL_LABEL[p.protocol] || p.protocol}</span>` : ""}${p.active ? '<span class="p-badge">启用中</span>' : ""}</div>
         <div class="p-detail"></div>
       </div>
       <div class="p-actions">
@@ -1498,44 +1617,246 @@ function renderProviderList() {
         ${providers.length > 1 ? '<button class="p-del">删除</button>' : ""}
       </div>`;
     row.querySelector(".nm").textContent = p.name;
-    row.querySelector(".p-detail").textContent =
-      `${p.baseURL} · ${p.model || "未设置模型"}` +
-      (p.manualContextWindow ? ` · 窗口 ${fmtTokens(p.manualContextWindow)}` : "");
-    if (!p.active) row.querySelector(".p-use").addEventListener("click", () => activateProvider(p.id));
+    row.querySelector(".p-detail").textContent = `${p.baseURL} · ${(p.models || []).length} 个模型`;
+    if (!p.active) row.querySelector(".p-use").addEventListener("click", () => activateModel(p.id, null));
     row.querySelector(".p-edit").addEventListener("click", () => openProviderForm(p.id));
     const del = row.querySelector(".p-del");
     if (del) del.addEventListener("click", () => removeProvider(p.id, p.name));
+
+    // 模型 chips：点一下就把「该供应商的这个模型」设为启用
+    const chips = document.createElement("div");
+    chips.className = "p-models";
+    for (const m of p.models || []) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "p-model-chip" + (p.active && m.active ? " active" : "");
+      chip.title = `${m.name}\n思考等级：${m.reasoningLabel}（${m.reasoningDialect}）`;
+      chip.textContent = `${p.active && m.active ? "✓ " : ""}${m.displayName}${reasoningTag(m) ? ` · ${reasoningTag(m)}` : ""}`;
+      chip.addEventListener("click", async () => {
+        if (!(p.active && m.active)) await activateModel(p.id, m.id);
+        else openProviderForm(p.id, m.id);
+      });
+      chips.appendChild(chip);
+    }
+    if (!(p.models || []).length) {
+      const none = document.createElement("span");
+      none.className = "p-model-none";
+      none.textContent = "还没有模型，点「编辑」添加";
+      chips.appendChild(none);
+    }
+    row.querySelector(".p-info").appendChild(chips);
     list.appendChild(row);
+  }
+  if (settingsFocusProviderId) {
+    const el = list.querySelector(".provider-row.focused");
+    if (el) el.scrollIntoView({ block: "nearest" });
   }
 }
 
-/* ----- 设置弹窗：编辑表单 ----- */
-function openProviderForm(providerId) {
+/* ----- 设置弹窗：编辑表单（供应商 + 它的模型列表 + 单个模型编辑） ----- */
+let editingProviderId = null; // null = 新增模式，否则为正在编辑的供应商 id
+let editingModelId = null;    // 正在「模型编辑面板」里编辑的模型 id
+let pendingModels = [];       // 新增供应商模式下待提交的模型（[{name, modality, contextWindow}]）
+let gatewayModels = [];       // 最近一次「获取列表」拿到的网关模型（[{id, contextWindow, supportsVision}]）
+
+function currentEditingProvider() {
+  return editingProviderId ? (state.config?.providers || []).find((x) => x.id === editingProviderId) : null;
+}
+
+function currentEditingModel() {
+  const p = currentEditingProvider();
+  return p && editingModelId ? (p.models || []).find((m) => m.id === editingModelId) : null;
+}
+
+function openProviderForm(providerId, focusModelId) {
   editingProviderId = providerId || null;
-  const p = editingProviderId
-    ? (state.config.providers || []).find((x) => x.id === editingProviderId)
-    : null;
+  editingModelId = null;
+  const p = currentEditingProvider();
   $("pf-mode").textContent = p ? p.name : "新增供应商";
   $("pf-mode").className = "key-state" + (p ? " ok" : "");
   $("pf-name").value = p?.name || "";
   $("pf-base-url").value = p?.baseURL || "";
   $("pf-api-key").value = "";
   $("pf-api-key").type = "password";
-  $("pf-model").value = p?.model || "";
   $("pf-protocol").value = p?.protocol || "openai";
-  $("pf-vision").checked = p ? p.modality === "vision" : false;
-  $("pf-ctx").value = p?.manualContextWindow ?? "";
   $("pf-key-state").textContent = p ? (p.hasKey ? `已保存 ${p.keyMasked}，留空则不修改` : "未保存 Key") : "";
   $("pf-key-state").className = "key-state" + (p?.hasKey ? " ok" : "");
-  $("model-list").innerHTML = "";
+  $("pf-model-new").value = "";
+  gatewayModels = [];
+  renderGatewayModels();
+  if (!p) pendingModels = [];
+  renderModelPanel();
+  closeModelForm();
   setSettingsStatus("", "");
   $("provider-form-wrap").classList.remove("hidden");
   $("pf-name").focus();
+  if (focusModelId && p) openModelForm(p.id, focusModelId);
 }
 
 function closeProviderForm() {
   editingProviderId = null;
+  editingModelId = null;
+  pendingModels = [];
+  gatewayModels = [];
   $("provider-form-wrap").classList.add("hidden");
+  closeModelForm();
+}
+
+function closeModelForm() {
+  editingModelId = null;
+  $("model-form-wrap").classList.add("hidden");
+}
+
+/** 模型列表：编辑模式下每行一个模型（可设启用 / 编辑 / 删除），新增模式下是待提交清单 */
+function renderModelPanel() {
+  const list = $("pf-model-list");
+  list.innerHTML = "";
+  const p = currentEditingProvider();
+  $("pf-model-count").textContent = p
+    ? `共 ${(p.models || []).length} 个 · 一个供应商可添加多个模型`
+    : "保存供应商后再逐个添加模型（可先「获取列表」）";
+
+  const models = p ? (p.models || []) : pendingModels.map((m) => ({ ...m, id: `pending:${m.name}`, reasoningLevel: "default", reasoningLabel: "供应商默认", displayName: m.name, active: false }));
+  if (!models.length) {
+    const empty = document.createElement("div");
+    empty.className = "model-empty";
+    empty.textContent = p ? "还没有模型：在下面输入模型名，或点「获取列表」从网关挑选（可加多个）" : "在下面输入模型名，或点「获取列表」从网关挑选（可加多个）";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const m of models) {
+    const row = document.createElement("div");
+    row.className = "model-row" + (m.active ? " active" : "") + (m.id === editingModelId ? " editing" : "");
+    row.innerHTML = `
+      <button type="button" class="m-pick" title="设为该供应商的启用模型">${m.active ? "✓" : "○"}</button>
+      <div class="m-info">
+        <div class="m-name"></div>
+        <div class="m-detail"></div>
+      </div>
+      <div class="m-actions">
+        <button type="button" class="m-edit">编辑</button>
+        <button type="button" class="m-del">删除</button>
+      </div>`;
+    row.querySelector(".m-name").textContent = `${m.modality === "vision" ? "🖼 " : ""}${m.displayName || m.name}`;
+    row.querySelector(".m-detail").textContent =
+      `${m.name} · 思考等级 ${m.reasoningLabel || "供应商默认"}`
+      + (m.manualContextWindow ? ` · 窗口 ${fmtTokens(m.manualContextWindow)}` : m.contextWindow ? ` · 窗口 ${fmtTokens(m.contextWindow)}（网关）` : "");
+    const pick = row.querySelector(".m-pick");
+    if (p) {
+      pick.addEventListener("click", () => { if (!m.active) activateModel(p.id, m.id); });
+      row.querySelector(".m-edit").addEventListener("click", () => openModelForm(p.id, m.id));
+      row.querySelector(".m-del").addEventListener("click", () => removeModel(p.id, m.id, m.name));
+    } else {
+      pick.classList.add("ghost");
+      pick.addEventListener("click", () => { pendingModels = pendingModels.filter((x) => x.name !== m.name); renderModelPanel(); });
+      pick.textContent = "×";
+      pick.title = "从待添加清单里移除";
+      row.querySelector(".m-edit").textContent = "移除";
+      row.querySelector(".m-edit").addEventListener("click", () => { pendingModels = pendingModels.filter((x) => x.name !== m.name); renderModelPanel(); });
+      row.querySelector(".m-del").classList.add("hidden");
+    }
+    list.appendChild(row);
+  }
+}
+
+/** 从网关拉取的模型清单：全部平铺成可点即添加的 chips（不再用会被输入过滤的 datalist） */
+function renderGatewayModels() {
+  const box = $("gateway-models");
+  box.innerHTML = "";
+  if (!gatewayModels.length) return;
+  const label = document.createElement("div");
+  label.className = "gw-label";
+  label.textContent = `网关返回 ${gatewayModels.length} 个模型（点一下直接添加）：`;
+  box.appendChild(label);
+  const wrap = document.createElement("div");
+  wrap.className = "gw-chips";
+  const existing = new Set(
+    (currentEditingProvider()?.models || []).map((m) => m.name).concat(pendingModels.map((m) => m.name))
+  );
+  for (const m of gatewayModels) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "gw-chip" + (existing.has(m.id) ? " added" : "");
+    chip.textContent = (existing.has(m.id) ? "✓ " : "＋ ") + m.id
+      + (m.contextWindow ? ` · ${fmtTokens(m.contextWindow)}` : "")
+      + (m.supportsVision ? " · 🖼" : "")
+      + (m.supportsReasoning ? " · ⚡" : "");
+    chip.title = `${m.id}\n上下文：${m.contextWindow ?? "未知"}\n多模态：${m.supportsVision ? "是" : "未知"} · 支持推理：${m.supportsReasoning ? "是" : "未知"}`;
+    chip.addEventListener("click", () => addModelByName(m.id, m));
+    wrap.appendChild(chip);
+  }
+  box.appendChild(wrap);
+}
+
+/** 单个模型的编辑面板（模型名 / 显示名 / 多模态 / 上下文 / 思考等级） */
+function openModelForm(providerId, modelId) {
+  const p = (state.config?.providers || []).find((x) => x.id === providerId);
+  const m = p && (p.models || []).find((x) => x.id === modelId);
+  if (!p || !m) return;
+  editingProviderId = p.id;
+  editingModelId = m.id;
+  $("mf-mode").textContent = `${p.name} · ${m.displayName}`;
+  $("mf-mode").className = "key-state ok";
+  $("mf-name").value = m.name;
+  $("mf-label").value = m.displayName === m.name ? "" : m.displayName;
+  $("mf-vision").checked = m.modality === "vision";
+  $("mf-ctx").value = m.manualContextWindow ?? "";
+  renderDialectSelect(m.reasoning?.dialect || "auto", m.reasoning?.level || "default", m.reasoning?.custom || "");
+  $("model-form-wrap").classList.remove("hidden");
+  renderModelPanel();
+  $("mf-name").focus();
+}
+
+/** 「思考等级划分方式」下拉：自动识别 + 全部方言（每家供应商的档位都不一样） */
+function renderDialectSelect(dialect, level, custom) {
+  const dialects = state.config?.dialects || [];
+  const dSel = $("mf-dialect");
+  dSel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "auto";
+  auto.textContent = "自动识别（按网关地址 / 模型名判断）";
+  dSel.appendChild(auto);
+  for (const d of dialects) {
+    const opt = document.createElement("option");
+    opt.value = d.id;
+    opt.textContent = `${d.label} —— ${d.vendor}`;
+    opt.title = d.scheme;
+    dSel.appendChild(opt);
+  }
+  dSel.value = dialect;
+  renderLevelSelect(dialect, level, custom);
+}
+
+/** 「思考等级」下拉：档位来自选中的方言（OpenAI 五档 / 智谱两态 / Anthropic 预算…） */
+function renderLevelSelect(dialect, level, custom) {
+  const dialects = state.config?.dialects || [];
+  const effective = dialect === "auto"
+    ? (state.config?.reasoning?.dialect || "none")
+    : dialect;
+  const d = dialects.find((x) => x.id === effective);
+  const lSel = $("mf-level");
+  lSel.innerHTML = "";
+  for (const lv of d?.levels || [{ id: "default", label: "供应商默认", desc: "" }]) {
+    const opt = document.createElement("option");
+    opt.value = lv.id;
+    opt.textContent = lv.label;
+    opt.title = lv.desc;
+    lSel.appendChild(opt);
+  }
+  lSel.value = (d?.levels || []).some((l) => l.id === level) ? level : "default";
+  $("mf-dialect-hint").textContent = dialect === "auto"
+    ? `当前自动识别为「${state.config?.reasoning?.dialectLabel || "—"}」`
+    : (d ? `请求字段 ${d.field}` : "");
+  // 方言与协议不匹配时给出提示（llm.ts 会做近似换算，不会白选，但语义可能略有偏差）
+  const protocol = currentEditingProvider()?.protocol || "openai";
+  const mismatch = d?.protocols && !d.protocols.includes(protocol);
+  $("mf-scheme").textContent = (d?.scheme || "")
+    + (mismatch ? `\n⚠ 这个划分方式是为「${d.protocols.join(" / ")}」协议准备的，当前供应商用的是「${protocol}」协议：档位会按近似方式换算后发送（详见 README 的思考等级章节）。` : "");
+  const showCustom = effective === "custom" && lSel.value === "custom";
+  $("mf-custom").classList.toggle("hidden", !showCustom);
+  if (showCustom && custom) $("mf-custom").value = custom;
+  else if (!showCustom) $("mf-custom").value = "";
 }
 
 function setSettingsStatus(text, kind) {
@@ -1544,8 +1865,8 @@ function setSettingsStatus(text, kind) {
   el.className = "settings-status" + (kind ? " " + kind : "");
 }
 
-/** 测试连接：新供应商用表单值；编辑已存供应商且 Key 留空 → 用已保存的 Key 测 */
-async function testConnection() {
+/** 测试连接 / 拉取模型：新供应商用表单值；编辑已存供应商且 Key 留空 → 用已保存的 Key */
+async function fetchGatewayModelChips() {
   const baseURL = $("pf-base-url").value.trim();
   const apiKeyRaw = $("pf-api-key").value.trim();
   if (!baseURL) { setSettingsStatus("✗ 请先填写 BASE_URL", "err"); return; }
@@ -1562,12 +1883,11 @@ async function testConnection() {
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      $("model-list").innerHTML = res.models.map((m) => `<option value="${m.replace(/"/g, "&quot;")}">`).join("");
-      setSettingsStatus(`✓ 连接成功，网关支持 ${res.models.length} 个模型（模型输入框已可下拉选择）`, "ok");
+      gatewayModels = res.models || [];
+      renderGatewayModels();
+      setSettingsStatus(`✓ 连接成功，网关共 ${gatewayModels.length} 个模型 —— 下面点一下即可添加（也可以直接手动输入模型名）`, "ok");
       // 拉取成功会把 context_length 写入服务端缓存 → 刷新配置以更新容量条分母
-      if (res.contextWindow) {
-        api("/api/config").then(applyConfigState).catch(() => {});
-      }
+      if (res.contextWindow) api("/api/config").then(applyConfigState).catch(() => {});
     } else {
       setSettingsStatus(`✗ ${res.error}`, "err");
     }
@@ -1576,23 +1896,47 @@ async function testConnection() {
   }
 }
 
+/** 把某个模型名加进「当前供应商」（编辑模式）或待添加清单（新增模式） */
+async function addModelByName(name, meta) {
+  const modelName = (name || "").trim();
+  if (!modelName) { setSettingsStatus("✗ 模型名不能为空", "err"); return; }
+  if (editingProviderId) {
+    try {
+      const res = await api(`/api/config/providers/${editingProviderId}/models`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: modelName,
+          modality: meta?.supportsVision ? "vision" : undefined,
+          contextWindow: meta?.contextWindow ?? undefined,
+        }),
+      });
+      await applyConfigState(await api("/api/config"));
+      $("pf-model-new").value = "";
+      renderGatewayModels();
+      setSettingsStatus(res.created ? `✓ 已添加模型「${modelName}」并设为该供应商的启用模型` : `✓ 「${modelName}」已存在，已更新并设为启用模型`, "ok");
+      openModelForm(editingProviderId, res.model.id);
+    } catch (err) {
+      setSettingsStatus(`✗ ${err.message}`, "err");
+    }
+    return;
+  }
+  if (pendingModels.some((m) => m.name === modelName)) { setSettingsStatus("✗ 该模型已在待添加清单里", "err"); return; }
+  pendingModels.push({ name: modelName, modality: meta?.supportsVision ? "vision" : "text", contextWindow: meta?.contextWindow ?? null });
+  $("pf-model-new").value = "";
+  renderModelPanel();
+  renderGatewayModels();
+  setSettingsStatus(`✓ 已加入待添加清单（保存供应商时一起提交，共 ${pendingModels.length} 个）`, "ok");
+}
+
 async function saveProvider() {
   const name = $("pf-name").value.trim();
   const baseURL = $("pf-base-url").value.trim();
-  const model = $("pf-model").value.trim();
   const apiKeyRaw = $("pf-api-key").value.trim();
   if (!name) { setSettingsStatus("✗ 名称不能为空", "err"); return; }
   if (!baseURL) { setSettingsStatus("✗ BASE_URL 不能为空", "err"); return; }
-  if (!model) { setSettingsStatus("✗ 模型名不能为空（可先「获取列表」再选）", "err"); return; }
 
-  const body = {
-    name,
-    baseURL,
-    model,
-    protocol: $("pf-protocol").value,
-    modality: $("pf-vision").checked ? "vision" : "text",
-    contextWindow: $("pf-ctx").value.trim(), // 空串 = 清除手动上下文
-  };
+  const body = { name, baseURL, protocol: $("pf-protocol").value };
   if (apiKeyRaw) body.apiKey = apiKeyRaw; // 留空 = 不修改已保存的 Key
 
   try {
@@ -1603,46 +1947,120 @@ async function saveProvider() {
         body: JSON.stringify(body),
       });
       setSettingsStatus(res.activeChanged ? "✓ 已保存并应用到当前会话配置" : "✓ 已保存（该供应商未启用）", "ok");
-      editingProviderId = null;
     } else {
+      if (!pendingModels.length) {
+        setSettingsStatus("✗ 至少填一个模型名（可先点「获取列表」从网关选择）", "err");
+        return;
+      }
+      body.models = pendingModels.map((m) => ({ name: m.name, modality: m.modality, contextWindow: m.contextWindow ?? undefined }));
       const res = await api("/api/config/providers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      editingProviderId = res.provider.id; // 保存后转为编辑态，便于继续调整
-      setSettingsStatus(res.activeChanged ? "✓ 已添加并启用" : "✓ 已添加", "ok");
+      editingProviderId = res.provider.id; // 保存后转为编辑态，便于继续加模型
+      pendingModels = [];
+      setSettingsStatus(`✓ 已添加供应商（${res.provider.models.length} 个模型）${res.activeChanged ? "并启用" : ""}`, "ok");
     }
-    applyConfigState(await api("/api/config"));
-    openProviderForm(editingProviderId); // 用保存后的状态刷新表单（Key 状态等）
+    await applyConfigState(await api("/api/config"));
+    openProviderForm(editingProviderId);
     setSettingsStatus($("settings-status").textContent, "ok");
   } catch (err) {
     setSettingsStatus(`✗ ${err.message}`, "err");
   }
 }
 
-async function activateProvider(id) {
+/** 保存「模型编辑面板」里的改动（含思考等级） */
+async function saveModel() {
+  const p = currentEditingProvider();
+  const m = currentEditingModel();
+  if (!p || !m) return;
+  const name = $("mf-name").value.trim();
+  if (!name) { setSettingsStatus("✗ 模型名不能为空", "err"); return; }
+  const dialect = $("mf-dialect").value;
+  const level = $("mf-level").value;
+  const body = {
+    name,
+    label: $("mf-label").value.trim(),
+    modality: $("mf-vision").checked ? "vision" : "text",
+    contextWindow: $("mf-ctx").value.trim(), // 空串 = 清除手动上下文
+    reasoning: {
+      dialect,
+      level,
+      custom: dialect === "custom" ? $("mf-custom").value : "",
+    },
+  };
+  try {
+    const res = await api(`/api/config/providers/${p.id}/models/${m.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await applyConfigState(await api("/api/config"));
+    openModelForm(p.id, m.id);
+    setSettingsStatus(`✓ 已保存模型「${name}」· 思考等级 ${res.model.reasoningLabel}`, "ok");
+  } catch (err) {
+    setSettingsStatus(`✗ ${err.message}`, "err");
+  }
+}
+
+async function removeModel(providerId, modelId, name) {
+  if (!(await uiConfirm(`确定删除模型「${name}」？`, { title: "删除模型", okText: "删除", danger: true }))) return;
+  try {
+    await api(`/api/config/providers/${providerId}/models/${modelId}`, { method: "DELETE" });
+    await applyConfigState(await api("/api/config"));
+    if (editingModelId === modelId) closeModelForm();
+    renderModelPanel();
+    setSettingsStatus(`✓ 已删除模型「${name}」`, "ok");
+  } catch (err) {
+    setSettingsStatus(`✗ ${err.message}`, "err");
+  }
+}
+
+/** 切换「供应商 + 模型」（顶栏下拉、供应商列表的模型 chip、设为启用模型 都走它） */
+async function activateModel(providerId, modelId) {
   try {
     const res = await api("/api/config/activate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ providerId, modelId }),
     });
-    applyConfigState(await api("/api/config"));
+    await applyConfigState(await api("/api/config"));
     if (!$("settings-mask").classList.contains("hidden")) {
-      setSettingsStatus(`✓ 已启用「${res.name}」· ${res.model}${res.mock ? "（无 Key → 模拟模式）" : ""}`, "ok");
+      setSettingsStatus(`✓ 已启用「${res.name} · ${res.model}」· 思考等级 ${res.reasoningLabel}${res.mock ? "（无 Key → 模拟模式）" : ""}`, "ok");
+      renderModelPanel();
     }
   } catch (err) {
     if (!$("settings-mask").classList.contains("hidden")) setSettingsStatus(`✗ ${err.message}`, "err");
-    else uiAlert(`切换失败：${err.message}`, "切换供应商");
+    else uiAlert(`切换失败：${err.message}`, "切换模型");
+  }
+}
+
+/** 顶栏快捷调整当前模型的思考等级（档位来自该供应商的方言） */
+async function setReasoningLevel(level) {
+  try {
+    await api("/api/config/reasoning", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ level }),
+    });
+    await applyConfigState(await api("/api/config"));
+    const label = state.config?.reasoning?.label || level;
+    if (!$("settings-mask").classList.contains("hidden")) {
+      setSettingsStatus(`✓ 思考等级已切换为「${label}」`, "ok");
+      const p = currentEditingProvider();
+      if (p && editingModelId) openModelForm(p.id, editingModelId);
+    }
+  } catch (err) {
+    uiAlert(`思考等级切换失败：${err.message}`, "思考等级");
   }
 }
 
 async function removeProvider(id, name) {
-  if (!(await uiConfirm(`确定删除供应商「${name}」？`, { title: "删除供应商", okText: "删除", danger: true }))) return;
+  if (!(await uiConfirm(`确定删除供应商「${name}」？（它下面的模型会一起删除）`, { title: "删除供应商", okText: "删除", danger: true }))) return;
   try {
     await api(`/api/config/providers/${id}`, { method: "DELETE" });
-    applyConfigState(await api("/api/config"));
+    await applyConfigState(await api("/api/config"));
     if (editingProviderId === id) closeProviderForm();
   } catch (err) {
     uiAlert(`删除失败：${err.message}`, "删除供应商");
@@ -1973,7 +2391,7 @@ async function init() {
   on("sidebar-toggle", "click", () => setSidebarOpen(!$("sidebar").classList.contains("open")));
   on("sidebar-scrim", "click", () => setSidebarOpen(false));
 
-  // 供应商：设置弹窗 + 顶栏切换器
+  // 供应商 / 模型：设置弹窗 + 顶栏切换器
   const closeSettings = () => { $("settings-mask").classList.add("hidden"); closeProviderForm(); };
   on("settings-btn", "click", openSettings);
   on("side-model", "click", openSettings);
@@ -2004,9 +2422,31 @@ async function init() {
     const keyInput = $("pf-api-key");
     keyInput.type = keyInput.type === "password" ? "text" : "password";
   });
-  on("pf-fetch-models", "click", testConnection);
-  on("pf-test", "click", testConnection);
+  // 测试连接 / 获取列表 → 渲染成「点一下即添加」的网关模型清单
+  on("pf-fetch-models", "click", fetchGatewayModelChips);
+  on("pf-test", "click", fetchGatewayModelChips);
   on("pf-save", "click", saveProvider);
+  // 模型：手动添加（输入框回车 / ＋ 按钮）
+  on("pf-model-add-btn", "click", () => addModelByName($("pf-model-new").value, null));
+  if ($("pf-model-new")) {
+    $("pf-model-new").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); addModelByName($("pf-model-new").value, null); }
+    });
+  }
+  // 模型编辑面板：思考等级（方言 / 档位）与保存、删除、设为启用
+  on("mf-save", "click", saveModel);
+  on("mf-activate", "click", () => {
+    const p = currentEditingProvider();
+    const m = currentEditingModel();
+    if (p && m) activateModel(p.id, m.id);
+  });
+  on("mf-delete", "click", () => {
+    const p = currentEditingProvider();
+    const m = currentEditingModel();
+    if (p && m) removeModel(p.id, m.id, m.name);
+  });
+  on("mf-dialect", "change", () => renderLevelSelect($("mf-dialect").value, "default", ""));
+  on("mf-level", "change", () => renderLevelSelect($("mf-dialect").value, $("mf-level").value, $("mf-custom").value));
 
   // 文件上下文：📎 附件 / 文件选择器 / 远程文件夹 / 本地上传
   on("attach-btn", "click", openFsModal);
@@ -2062,9 +2502,13 @@ async function init() {
       showProviderMenu(false);
       setSidebarOpen(false);
     }
-    if (e.key === "Enter" && ["pf-name", "pf-base-url", "pf-api-key", "pf-model"].includes(e.target.id)) {
+    if (e.key === "Enter" && ["pf-name", "pf-base-url", "pf-api-key"].includes(e.target.id)) {
       e.preventDefault();
       saveProvider();
+    }
+    if (e.key === "Enter" && ["mf-name", "mf-label"].includes(e.target.id)) {
+      e.preventDefault();
+      saveModel();
     }
   });
 

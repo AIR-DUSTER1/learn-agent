@@ -12,6 +12,7 @@
  *     （llm.ts 的 createChatModel）读取的永远是当前值。
  */
 import "dotenv/config";
+import { DEFAULT_REASONING, type ReasoningSetting } from "./reasoning.js";
 
 export const config = {
   /** 兼容 OpenAI 格式的 API 地址（例如 https://tokenrhythm.studio/v1） */
@@ -32,7 +33,17 @@ export const config = {
    *   - "gemini"           Gemini 原生 generateContent（{baseURL}/v1beta/...）
    */
   protocol: process.env.AI_PROTOCOL ?? "openai",
-} as { baseURL: string; apiKey: string; model: string; protocol: Protocol };
+
+  /**
+   * 思考等级（推理强度）——跟着「当前启用的模型」走，由 settings.ts 在
+   * 切换供应商 / 模型时写入，llm.ts 建模型时读取。
+   *
+   * 各供应商对思考等级的划分并不一致（OpenAI 是 reasoning_effort 强度档，
+   * 智谱 GLM 是 thinking.type 开关，Anthropic 是 budget_tokens 预算…），
+   * 所以这里存的是「方言 + 档位」，由 reasoning.ts 翻译成真正的请求参数。
+   */
+  reasoning: { ...DEFAULT_REASONING } as ReasoningSetting,
+} as { baseURL: string; apiKey: string; model: string; protocol: Protocol; reasoning: ReasoningSetting };
 
 export type Protocol = "openai" | "openai-responses" | "anthropic" | "gemini";
 

@@ -31,6 +31,8 @@ npm run web                 # http://localhost:3000（PORT 环境变量可改端
 ```
 
 - **左侧会话栏**：多会话管理，每个会话绑定一个 Demo（图实例 + thread_id）；
+- **模型切换与思考等级**：顶栏 ▾ 按供应商分组列出**所有**已添加的模型，点一行即切换；
+  菜单顶部是当前模型的「思考等级」档位（档位随供应商划分方式变化，见下文）；
 - **流式回答**：token 级打字机输出 + Markdown 渲染（表格 / 代码块 / 引用）；
 - **工具调用卡片**：参数随模型生成逐字流出，完成后展示结果，可展开查看（同 ZCode 的工具块）；
 - **节点徽章**：`🧠 agent` / `🔧 tools` / `👔 supervisor` / `🔍 researcher/agent`，
@@ -55,28 +57,68 @@ npm run web                 # http://localhost:3000（PORT 环境变量可改端
 - **人工审批（示例 3）**：发送邮件前弹出审批卡，批准/拒绝按钮对应 `Command({ resume })`；
 - **停止按钮**：随时中断生成（AbortSignal 直通模型请求）。
 
-### 在界面里管理供应商与模型（多供应商）
+### 在界面里管理供应商与模型（多供应商 × 多模型 + 思考等级）
 
-点右上角 **⚙ 设置**（或顶栏的供应商按钮 ▾ / 侧栏底部的模型名），无需改 `.env`、无需重启：
+点右上角 **⚙ 设置**（或顶栏的模型按钮 ▾ / 侧栏底部的模型名），无需改 `.env`、无需重启：
 
-- **多供应商**：可添加任意多个供应商档案（名称 + 网关地址 + API Key + 模型），
-  列表中一键「启用」切换，顶栏 **▾** 也有快捷切换菜单；
+- **多供应商**：可添加任意多个供应商档案（名称 + 网关地址 + API Key + 协议），
+  列表中一键「启用」切换；
+- **一个供应商挂多个模型**：同一个网关（一套 BASE_URL + Key）往往提供好几个模型
+  （如 DeepSeek 官方同时有 `deepseek-flash` 与 `deepseek-v4-pro`）。
+  在供应商表单的「模型列表」里可以加任意多个模型，每个模型独立配置
+  **显示名 / 多模态 / 上下文窗口 / 思考等级**；
+- **模型切换**：顶栏 **▾** 直接列出「所有供应商的所有模型」（按供应商分组，✓ 标注当前模型），
+  点任意一行即切换 —— 同一个网关下的第二个模型不再需要另建一个供应商；
+- **从网关列表添加**：点「获取列表 / 测试连接」会把 `{BASE_URL}/models` 返回的模型
+  全部平铺成可点击的 chips（带上下文窗口 / 多模态 / 是否支持推理标记），点一下即添加，
+  也可以直接手输模型名；
 - **请求协议**：支持四种 AI 请求格式，适配中转站的多协议路由 ——
   `OpenAI Chat Completions`（默认）、`OpenAI Responses API`、
   `Anthropic Messages 原生`（如 DeepSeek 的 `https://api.deepseek.com/anthropic`）、
   `Gemini 原生 generateContent`；非 openai 协议的「获取列表」按各自的端点探测
   （Anthropic `/v1/models`、Gemini `/v1beta/models`），网关不提供列表时手动填模型名即可；
-- **网关地址 BASE_URL**：任意 OpenAI 兼容网关（中转站 / vLLM / 官方 API）；
 - **API Key**：密文显示、只回传掩码；编辑时留空表示保持不变，清空保存可回到模拟模式；
-- **模型 MODEL**：可点「获取列表 / 测试连接」从网关拉取可用模型下拉选择
-  （编辑已保存的供应商时 Key 留空，会用已存的 Key 去测）；
-
-- 「测试连接」会实际请求 `{BASE_URL}/models`，Key 错误 / 路径不对会直接显示原因；
+- 「测试连接」会实际请求模型的列表端点，Key 错误 / 路径不对会直接显示原因；
 - 切换后**新建会话立即生效**；已有会话在下一条消息时自动切换模型
   （示例 2/3 的多轮记忆会重置，等同重启服务）；
 - 至少保留一个供应商；删除启用中的供应商会自动切到列表第一个；
 - 配置持久化在本地 `.web-config.json`（已 gitignore，含 Key），优先级高于 `.env`，
-  删除该文件即回退到 `.env`；旧版单供应商格式会自动迁移。
+  删除该文件即回退到 `.env`；旧版单供应商 / 单模型格式会自动迁移成多模型结构。
+
+### 思考等级（reasoning / thinking）的供应商适配
+
+「让模型想多久」这件事**没有统一标准**，每家供应商的参数名与档位划分都不一样。
+本项目把它抽象成「**方言（划分方式）+ 档位**」：档位跟着**模型**保存，
+顶栏 ▾ 菜单里可以随时切换，设置页的模型编辑面板里可以改「划分方式」。
+`src/reasoning.ts` 是唯一的适配层，`src/llm.ts` 负责把它翻译成各客户端的字段：
+
+| 划分方式（方言） | 供应商 | 请求字段 | 档位划分 |
+|---|---|---|---|
+| OpenAI 思考强度档 | OpenAI（GPT-5 / o 系） | `reasoning_effort` | none / minimal / low / medium / high / xhigh / max |
+| 智谱 GLM 深度思考开关 | 智谱 AI（GLM-4.5+） | `thinking.type` | default / enabled / disabled（**两态开关**） |
+| DeepSeek 思考开关 + 强度 | DeepSeek 官方 | `thinking.type` + `reasoning_effort` | 关闭 / 开启 / minimal→max 五档强度 |
+| Anthropic 扩展思考预算 | Anthropic（Claude 经典） | `thinking.budget_tokens` | 2k / 8k / 16k / 32k / 自适应 |
+| Anthropic 输出强度档 | Anthropic（新版 effort） | `output_config.effort` | low / medium / high / xhigh / max |
+| Gemini 思考预算 | Gemini 2.5 | `thinkingConfig.thinkingBudget` | 0（关）/ -1（动态）/ 1024 / 8192 / 24576 |
+| Gemini 思考等级 | Gemini 3 | `thinkingConfig.thinkingLevel` | LOW / MEDIUM / HIGH |
+| 通义千问 思考开关 / 预算 | 阿里云百炼（Qwen3） | `enable_thinking` + `thinking_budget` | 开 / 关 / 1k / 8k / 32k |
+| 不设置（通用兼容） | 任意 | — | 不发送任何思考参数 |
+| 自定义 JSON | 任意（中转站私有字段） | 手写 | 例如 `{"reasoning":{"effort":"high"}}` |
+
+- **自动识别**：默认档位是 `auto` —— 按 BASE_URL 主机（bigmodel.cn / deepseek.com /
+  openai.com / anthropic.com / googleapis.com / dashscope…）、模型名前缀（glm / deepseek /
+  gpt-5 / o3 / claude / gemini / qwen）与协议推断方言，设置页会显示「自动识别为 XXX」；
+- **协议优先**：Anthropic Messages / Gemini 原生接口的思考参数与 OpenAI 系完全不同，
+  所以 `anthropic` 协议下自动落到 Anthropic 方言、`gemini` 协议下落到 Gemini 方言；
+  若你手动把方言配到不匹配的协议上，设置页会给出 ⚠ 提示，`llm.ts` 会做**近似换算**
+  （`reasoning_effort` ↔ `budget_tokens` / `thinkingLevel`）而不是静默丢弃；
+- **默认不干预**：档位默认「供应商默认」＝不发送任何思考参数，因此不认识这些字段的
+  中转站不会被塞奇怪参数；只有你显式选了档位才会往请求里加字段；
+- DeepSeek 的参数组合由探针脚本实测确认（`.setting/probe-reasoning-levels.mjs`，
+  因为带 Key 所以放在已 gitignore 的 `.setting/` 下：`thinking.type=disabled`
+  之后响应里确实不再有 `reasoning_content`）；
+  OpenAI / Anthropic / Gemini 的字段与取值来自各自官方 SDK 的类型定义。
+
 
 架构：`node:http` + SSE（无 Express）｜前端原生 HTML/CSS/JS（无框架、无构建）。
 事件协议与翻译层见 `src/server/events.ts` / `stream.ts`，细节见 Wiki §3.12。
@@ -168,6 +210,7 @@ src/
     parallel.ts  # 示例 5：Send API 并行 map-reduce + Annotation.Root 自定义状态
   cli.ts         # CLI 入口：token 流式 + 节点日志 + 审批交互
   server/        # Web 界面（参考 ZCode）：SSE 服务 + 原生前端，见「Web 界面」
+    settings.ts  # 多供应商 × 多模型管理（.web-config.json 读写、迁移、思考等级）
 scripts/
   list-models.ts # npm run models：查询网关支持的模型列表（排查 400 的利器）
 docs/

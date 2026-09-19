@@ -895,7 +895,7 @@ body {
 
 /* ---------- 设置弹窗 ---------- */
 #settings-modal {
-  width: min(560px, 94vw);
+  width: min(660px, 94vw);
   max-height: 90vh;
   overflow-y: auto;
   background: var(--bg-elev);
@@ -992,6 +992,202 @@ html[data-theme="light"] .pf-select { background: var(--bg-input); }
   transition: border-color .15s;
 }
 .cap-ctx:focus { border-color: var(--accent); }
+
+/* ==========================================================================
+   多模型管理（v2）：顶栏「模型菜单」+ 设置页「模型列表 / 思考等级」
+   ========================================================================== */
+
+/* ---------- 顶栏按钮上的思考等级角标 ---------- */
+.provider-btn .pm-reason {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(139,92,246,.18);
+  color: var(--accent-2-soft);
+  border: 1px solid rgba(139,92,246,.28);
+  white-space: nowrap;
+  flex: none;
+}
+.provider-btn .pm-reason.hidden { display: none; }
+
+/* ---------- 顶栏 ▾ 菜单：模型多了要能滚动 ---------- */
+.provider-menu { width: 340px; max-height: min(70vh, 560px); overflow-y: auto; }
+
+/* 当前模型的思考等级：档位 chips */
+.pm-reason-box {
+  padding: 8px 9px 9px;
+  margin-bottom: 5px;
+  background: rgba(139,92,246,.07);
+  border: 1px solid rgba(139,92,246,.18);
+  border-radius: 9px;
+}
+.pm-reason-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 11.5px; color: var(--text-2); margin-bottom: 7px;
+}
+.pm-reason-now {
+  font-style: normal; font-size: 11px;
+  color: var(--accent-2-soft);
+  background: rgba(139,92,246,.14);
+  padding: 1px 7px; border-radius: 5px;
+  white-space: nowrap;
+}
+.pm-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.pm-chip {
+  padding: 4px 9px;
+  font-size: 11px;
+  font-family: var(--sans);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.pm-chip:hover { border-color: var(--accent); color: var(--text); }
+.pm-chip.active {
+  background: rgba(139,92,246,.2);
+  border-color: rgba(139,92,246,.45);
+  color: var(--text);
+  font-weight: 600;
+}
+.pm-scheme {
+  margin-top: 7px;
+  font-size: 10.5px; line-height: 1.6; color: var(--text-3);
+}
+.pm-scheme.err { color: var(--red); }
+
+/* 供应商分组 */
+.pm-group { margin-bottom: 4px; }
+.pm-group-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px 4px;
+  font-size: 11px; color: var(--text-3);
+}
+.pm-group-head .pm-g-name {
+  font-weight: 600; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pm-group-head .pm-g-badge {
+  font-size: 9.5px; padding: 1px 5px; border-radius: 4px;
+  background: rgba(226,161,60,.14); color: #ffd591;
+}
+.pm-group-head .pm-g-edit {
+  margin-left: auto;
+  font-size: 10.5px; padding: 2px 7px;
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text-3);
+  cursor: pointer; font-family: var(--sans);
+}
+.pm-group-head .pm-g-edit:hover { color: var(--text); border-color: var(--accent); }
+.pm-empty { padding: 4px 12px 8px; font-size: 11px; color: var(--text-3); }
+.provider-menu .pm-item .pm-model.hot { color: var(--accent-2-soft); }
+
+/* ---------- 供应商行内的模型 chips ---------- */
+.p-models { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.p-model-chip {
+  font-size: 11px; font-family: var(--mono);
+  padding: 3px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all .15s;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.p-model-chip:hover { border-color: var(--accent); color: var(--text); }
+.p-model-chip.active { border-color: rgba(63,185,111,.5); color: var(--green); }
+.p-model-none { font-size: 11px; color: var(--text-3); }
+.provider-row.focused { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(91,140,255,.15); }
+
+/* ---------- 设置页：模型列表 ---------- */
+.model-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-soft);
+}
+.model-head { justify-content: space-between; }
+.model-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 9px; }
+.model-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.model-row.active { border-color: rgba(63,185,111,.45); background: rgba(63,185,111,.05); }
+.model-row.editing { border-color: var(--accent); }
+.model-row .m-pick {
+  width: 22px; height: 22px; flex: none;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; color: var(--accent); cursor: pointer;
+  font-size: 12px;
+}
+.model-row .m-pick.ghost { color: var(--red); }
+.model-row .m-pick:hover { border-color: var(--accent); }
+.model-row .m-info { flex: 1; min-width: 0; }
+.model-row .m-name { font-size: 12.5px; color: var(--text); }
+.model-row .m-detail {
+  margin-top: 2px; font-size: 11px; color: var(--text-3); font-family: var(--mono);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.model-row .m-actions { display: flex; gap: 6px; flex: none; }
+.model-row .m-actions button {
+  padding: 4px 9px; font-size: 11px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--text-2); cursor: pointer;
+  font-family: var(--sans);
+}
+.model-row .m-actions button:hover { background: var(--bg-hover); color: var(--text); }
+.model-row .m-actions .m-del:hover { color: var(--red); border-color: rgba(229,96,79,.4); }
+.model-row .m-actions .hidden { display: none; }
+.model-empty { font-size: 11.5px; color: var(--text-3); padding: 6px 2px 8px; line-height: 1.6; }
+.model-add-row { margin-top: 2px; }
+
+/* 网关模型清单：全部平铺成 chips，点一下即添加（不再受输入框过滤） */
+.gw-models { margin-top: 9px; }
+.gw-label { font-size: 11px; color: var(--text-3); margin-bottom: 6px; }
+.gw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.gw-chip {
+  font-size: 11px; font-family: var(--mono);
+  padding: 4px 9px;
+  background: var(--bg-input);
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all .15s;
+}
+.gw-chip:hover { border-color: var(--accent); border-style: solid; color: var(--text); }
+.gw-chip.added { border-style: solid; border-color: rgba(63,185,111,.45); color: var(--green); }
+
+/* ---------- 设置页：单个模型编辑面板 ---------- */
+.model-form {
+  margin-top: 14px;
+  padding: 14px;
+  background: rgba(91,140,255,.05);
+  border: 1px solid rgba(91,140,255,.18);
+  border-radius: 11px;
+}
+.reason-custom {
+  width: 100%;
+  padding: 9px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 12px; font-family: var(--mono);
+  outline: none; resize: vertical;
+}
+.reason-custom:focus { border-color: var(--accent); }
+.reason-custom.hidden { display: none; }
+.reason-scheme {
+  margin: 8px 0 0;
+  font-size: 11px; line-height: 1.7; color: var(--text-3);
+}
 
 /* ---------- 通用弹窗组件（自研 alert / confirm / prompt，替代原生对话框） ---------- */
 #ui-dialog-mask {

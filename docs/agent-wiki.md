@@ -257,22 +257,26 @@ graph
 
 ### 3.1 `src/config.ts` — 配置管理
 
-**职责**：从 `.env` 读取网关的三件套 `BASE_URL` / `API_KEY` / `MODEL`，集中管理，全局唯一配置入口。
+**职责**：从 `.env` 读取网关的三件套 `BASE_URL` / `API_KEY` / `MODEL`（外加协议与思考等级），集中管理，全局唯一配置入口。
 
 ```ts
 export const config = {
   baseURL: process.env.BASE_URL ?? "https://tokenrhythm.studio/v1",
   apiKey: process.env.API_KEY ?? "",
   model: process.env.MODEL ?? "deepseek-v4-flash",
+  protocol: process.env.AI_PROTOCOL ?? "openai",   // openai / openai-responses / anthropic / gemini
+  reasoning: { dialect: "auto", level: "default" }, // 思考等级：方言 + 档位（见 5.4.1）
 };
 export function assertConfig(): void { /* 缺 Key 时打印提示并退出 */ }
 ```
 
-**为什么独立成模块**：换供应商/模型只改 `.env`，所有业务代码零改动（这是「配置与逻辑分离」的示范）。
+**为什么独立成模块**：换供应商/模型只改 `.env`（Web 端则写 `.web-config.json` 覆盖），
+所有业务代码零改动（这是「配置与逻辑分离」的示范）。注意 `config` **不是常量**：
+Web 设置页切换「供应商 × 模型」时会实时改写它，建图时（`llm.ts`）读到的永远是当前值。
 
-### 3.2 `src/llm.ts` — 模型工厂
+### 3.2 `src/llm.ts` + `src/reasoning.ts` — 模型工厂与思考等级适配
 
-**职责**：唯一创建 Chat 模型的地方。核心一行：
+**职责**：唯一创建 Chat 模型的地方，同时负责把「思考等级」翻译成各协议认识的字段。
 
 ```ts
 new ChatOpenAI({
@@ -280,11 +284,20 @@ new ChatOpenAI({
   apiKey: config.apiKey,
   temperature,                       // 0 = 尽量确定性输出
   maxRetries: 2,                     // 网关偶发 503，让 SDK 自动重试
+  modelKwargs: { reasoning_effort: "high" },   // ★ 思考档位原样进请求体
   configuration: { baseURL: config.baseURL },  // ★ 接入任意 OpenAI 兼容网关
 });
 ```
 
-**关键点**：`ChatOpenAI` 的 `configuration.baseURL` 指向任意 OpenAI Chat Completions 兼容地址（中转站、vLLM、Ollama 的 OpenAI 兼容层都行），不需要供应商专属 SDK。
+**关键点**：
+
+- `configuration.baseURL` 指向任意 OpenAI Chat Completions 兼容地址（中转站、vLLM、
+  Ollama 的 OpenAI 兼容层都行），不需要供应商专属 SDK；
+- 四种协议（openai / openai-responses / anthropic / gemini）在这里分派到对应的
+  LangChain 客户端，图代码（`agent/*.ts`）完全不感知差异；
+- **思考等级的分离设计**：`reasoning.ts` 只描述「某家供应商怎么划分思考等级」
+  （方言 → 档位 → 归一化参数），`llm.ts` 只负责「归一化参数 → 客户端字段」。
+  想接入新供应商，在 `reasoning.ts` 里加一个方言即可，其余代码零改动。
 
 ### 3.3 `src/tools.ts` — 工具库
 
@@ -753,7 +766,9 @@ npm run demo:1              # ② 跑第一个 Demo
 
 ### 5.4 更换供应商 / 模型
 
-只改 `.env` 三行，业务代码零改动：
+两种方式，任选其一：
+
+**① 改 `.env`（CLI 与首次启动的默认值）**：只改三行，业务代码零改动：
 
 ```ini
 BASE_URL=https://你的网关/v1     # 任意 OpenAI Chat Completions 兼容地址
@@ -762,6 +777,45 @@ MODEL=deepseek-v4-flash          # 必须是 npm run models 列出的 id
 ```
 
 也支持本地模型：Ollama 开启 OpenAI 兼容层（`http://localhost:11434/v1`）、vLLM、LM Studio 同理。
+
+**② 在 Web 界面里管理（推荐，可挂多个供应商 × 多个模型）**：右上角 ⚙ 设置 →
+添加供应商（BASE_URL + Key + 协议）→ 在它的「模型列表」里点「获取列表」把网关返回的模型
+逐个加进来（`.web-config.json` 持久化，优先于 `.env`）。
+
+- **一个供应商 = 一套网关凭据**，下面可以挂任意多个模型；每个模型有自己的
+  显示名 / 多模态开关 / 上下文窗口 / 思考等级；
+- **顶栏 ▾ 是模型选择器**：按供应商分组列出全部模型，点一行就切换
+  （旧版每个供应商只能存一个模型，同一网关的第二个模型没有入口 —— 现在不会了）；
+- 切换后**新建会话立即生效**，已有会话在下一条消息时自动切换
+  （带 checkpoint 的会话记忆会重置，等价于重启服务）。
+
+### 5.4.1 思考等级（reasoning / thinking）怎么设
+
+「让模型想多久」在各家 API 里长得完全不一样，所以本项目把它抽象成
+**方言（划分方式）+ 档位**，档位跟着模型保存，顶栏 ▾ 里可以一键切换：
+
+| 方言 | 请求字段 | 档位 |
+|---|---|---|
+| OpenAI 强度档 | `reasoning_effort` | none / minimal / low / medium / high / xhigh / max |
+| 智谱 GLM | `thinking.type` | enabled / disabled（只有两态） |
+| DeepSeek | `thinking.type` + `reasoning_effort` | 关闭 / 开启 / minimal→max |
+| Anthropic 预算 | `thinking.budget_tokens` | 2k / 8k / 16k / 32k |
+| Anthropic 输出强度 | `output_config.effort` | low / medium / high / xhigh / max |
+| Gemini 预算 / 等级 | `thinkingConfig.thinkingBudget` / `thinkingLevel` | 0 / -1 / 1024 / 8192 / 24576；LOW / MEDIUM / HIGH |
+| 通义千问 | `enable_thinking` + `thinking_budget` | 开 / 关 / 1k / 8k / 32k |
+
+**实现要点**（`src/reasoning.ts` + `src/llm.ts`）：
+
+- 档位默认是**「供应商默认」= 不发送任何参数**，所以不认识这些字段的中转站不会被塞奇怪参数；
+- 方言默认 **auto**：按 BASE_URL 主机、模型名前缀、协议自动推断，设置页会显示推断结果；
+- **协议优先**：Anthropic / Gemini 原生接口的思考参数与 OpenAI 系完全不同，
+  自动推断会优先落在对应协议自己的方言上；手动配错时设置页给 ⚠ 提示，
+  `llm.ts` 做近似换算（`reasoning_effort` ↔ `budget_tokens` / `thinkingLevel`）而不是静默丢弃；
+- OpenAI Chat Completions 走 `modelKwargs` 透传（原样进请求体），
+  Responses API 转成 `reasoning.effort`，Anthropic / Gemini 走各自客户端的构造参数；
+- 想验证某家网关到底认哪些思考参数，写个几十行的探针脚本打几个请求即可
+  （本仓库的 `.setting/probe-reasoning-levels.mjs` 就是这样确认 DeepSeek 档位的：
+  带 Key 的脚本都放在已 gitignore 的 `.setting/` 下，不进仓库）。
 
 ### 5.5 观察与调试技巧
 

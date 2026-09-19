@@ -59,8 +59,9 @@
         <div class="topbar-right">
           <span id="mode-badge" class="badge mode-mock hidden" title="启用的供应商没有 API Key，模型决策由本地脚本模拟；工具结果是真实执行的">模拟模式</span>
           <div class="provider-switch">
-            <button id="provider-btn" class="provider-btn" title="切换供应商 / 模型">
+            <button id="provider-btn" class="provider-btn" title="切换模型 / 供应商 · 调整思考等级">
               <span id="provider-btn-text">加载中…</span>
+              <span id="provider-btn-reason" class="pm-reason"></span>
               <span class="chevron-down">▾</span>
             </button>
             <div id="provider-menu" class="provider-menu hidden"></div>
@@ -134,8 +135,8 @@
   <!-- ============ 设置弹窗：供应商列表 + 编辑表单 ============ -->
   <div id="settings-mask" class="hidden">
     <div id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <h2 id="settings-title">⚙ 设置 —— 供应商管理</h2>
-      <p class="settings-sub">可添加多个 OpenAI 兼容网关（中转站 / vLLM / 官方 API），点击「启用」随时切换</p>
+      <h2 id="settings-title">⚙ 设置 —— 供应商与模型管理</h2>
+      <p class="settings-sub">一个供应商 = 一套网关凭据（BASE_URL + Key + 协议），下面可以挂任意多个模型；启用任意「供应商 × 模型」组合即可切换聊天用的模型</p>
 
       <div class="field-label">供应商列表</div>
       <div id="provider-list"></div>
@@ -162,15 +163,6 @@
           </div>
         </label>
 
-      <label class="field">
-        <span class="field-label">模型 MODEL</span>
-        <div class="key-row">
-          <input id="pf-model" type="text" spellcheck="false" list="model-list" placeholder="例如 deepseek-v4-flash" />
-          <button id="pf-fetch-models" type="button" class="ghost-btn small" title="从网关拉取可用模型列表">获取列表</button>
-        </div>
-        <datalist id="model-list"></datalist>
-      </label>
-
         <label class="field">
           <span class="field-label">请求协议 <em class="key-state">中转站多协议路由时按此决定请求路径</em></span>
           <select id="pf-protocol" class="pf-select">
@@ -181,29 +173,88 @@
           </select>
         </label>
 
-      <label class="field">
-        <span class="field-label">能力与上下文</span>
-        <div class="cap-row">
-          <label class="cap-check" title="勾选后可附加图片（多模态模型才支持图片输入）">
-            <input id="pf-vision" type="checkbox" />
-            <span>多模态（支持图片输入）</span>
-          </label>
-          <input id="pf-ctx" class="cap-ctx" type="number" min="1024" step="1"
-                 placeholder="上下文窗口 tokens（留空 = 自动从网关获取）" />
+        <!-- ---------- 模型列表：一个供应商可以添加多个模型 ---------- -->
+        <div class="model-section">
+          <div class="field-label model-head">
+            <span>模型列表</span>
+            <em id="pf-model-count" class="key-state"></em>
+          </div>
+          <div id="pf-model-list" class="model-list"></div>
+
+          <div class="key-row model-add-row">
+            <input id="pf-model-new" type="text" spellcheck="false" placeholder="输入模型名（例如 deepseek-v4-pro），或点右侧从网关列表选择" />
+            <button id="pf-fetch-models" type="button" class="ghost-btn small" title="从网关拉取可用模型列表">获取列表</button>
+            <button id="pf-model-add-btn" type="button" class="ghost-btn small">＋ 添加</button>
+          </div>
+          <div id="gateway-models" class="gw-models"></div>
         </div>
-      </label>
 
-        <div id="settings-status" class="settings-status"></div>
+        <!-- ---------- 单个模型编辑面板 ---------- -->
+        <div id="model-form-wrap" class="model-form hidden">
+          <div class="field-label edit-title">正在编辑模型：<em id="mf-mode" class="key-state"></em></div>
 
+          <label class="field">
+            <span class="field-label">模型名 MODEL <em class="key-state">真正发给网关的 model 字段</em></span>
+            <input id="mf-name" type="text" spellcheck="false" placeholder="例如 deepseek-v4-pro" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">显示名 <em class="key-state">可选，留空则显示模型名</em></span>
+            <input id="mf-label" type="text" spellcheck="false" placeholder="例如 V4 Pro（强推理）" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">能力与上下文</span>
+            <div class="cap-row">
+              <label class="cap-check" title="勾选后可附加图片（多模态模型才支持图片输入）">
+                <input id="mf-vision" type="checkbox" />
+                <span>多模态（支持图片输入）</span>
+              </label>
+              <input id="mf-ctx" class="cap-ctx" type="number" min="1024" step="1"
+                     placeholder="上下文窗口 tokens（留空 = 自动从网关获取）" />
+            </div>
+          </label>
+
+          <label class="field">
+            <span class="field-label">思考等级划分方式 <em id="mf-dialect-hint" class="key-state"></em></span>
+            <select id="mf-dialect" class="pf-select"></select>
+          </label>
+
+          <label class="field">
+            <span class="field-label">思考等级 <em class="key-state">档位随「划分方式」变化 —— 每家供应商的划分并不一样</em></span>
+            <select id="mf-level" class="pf-select"></select>
+          </label>
+
+          <textarea id="mf-custom" class="reason-custom hidden" rows="2" spellcheck="false"
+                    placeholder='自定义 JSON，例如 {"reasoning": {"effort": "high"}}'></textarea>
+          <p id="mf-scheme" class="reason-scheme"></p>
+
+          <div class="settings-actions">
+            <button id="mf-activate" class="ghost-btn">设为启用模型</button>
+            <div class="spacer"></div>
+            <button id="mf-delete" class="ghost-btn">删除模型</button>
+            <button id="mf-save" class="btn btn-approve">保存模型</button>
+          </div>
+        </div>
+
+        <!-- 供应商本身的保存按钮放在最后：先填网关、再管模型，最后一起保存 -->
         <div class="settings-actions">
-          <button id="pf-test" class="ghost-btn">测试连接</button>
+          <button id="pf-test" class="ghost-btn">测试连接 / 拉取模型</button>
           <div class="spacer"></div>
           <button id="pf-cancel-edit" class="ghost-btn">取消编辑</button>
           <button id="pf-save" class="btn btn-approve">保存供应商</button>
         </div>
       </div>
 
-      <p class="settings-note">「启用」的供应商决定聊天使用的模型；切换后新建会话立即生效，已有会话在下一条消息时自动切换（Demo 2/3 的多轮记忆会重置，等同重启服务）。配置保存在本地 <code>.web-config.json</code>（已 gitignore），优先于 <code>.env</code>。</p>
+      <div id="settings-status" class="settings-status"></div>
+
+      <p class="settings-note">
+        「启用」的供应商 + 它当前的模型决定聊天用哪个模型；顶栏 <strong>▾</strong> 可以直接切换「任意供应商的任意模型」并调整思考等级。
+        思考等级按各家供应商的划分方式适配：OpenAI 是 <code>reasoning_effort</code> 强度档（minimal→high），
+        智谱 GLM 是 <code>thinking.type</code> 开关，DeepSeek 是开关 + 强度，Anthropic 是 <code>budget_tokens</code> 预算，Gemini 是 <code>thinkingBudget</code>/<code>thinkingLevel</code>；
+        选「自定义 JSON」还能直接手写网关需要的字段。
+        配置保存在本地 <code>.web-config.json</code>（已 gitignore），优先于 <code>.env</code>。
+      </p>
     </div>
   </div>
 

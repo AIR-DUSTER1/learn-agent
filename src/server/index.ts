@@ -7,12 +7,23 @@
  *
  * 路由：
  *   GET  /                  前端页面（public/ 下的静态文件）
- *   GET  /api/config        模型/模式元信息（是否 mock、模型名、Demo 清单）
+ *   GET  /api/config        模型/模式元信息（是否 mock、模型名、供应商×模型清单、思考等级、Demo 清单）
  *   GET  /api/sessions      会话列表
  *   POST /api/sessions      新建会话 { demo }
  *   DELETE /api/sessions/:id 删除会话
  *   POST /api/chat          发消息，SSE 流式返回 AgentEvent
  *   POST /api/resume        Demo 3 审批决定 { sessionId, decision }，SSE 流式返回
+ *
+ * 设置相关（供应商 × 模型 × 思考等级）：
+ *   POST /api/models                              拉取网关模型列表（兼测试连接，带元信息）
+ *   POST /api/config/providers                    新增供应商 { name, baseURL, apiKey, protocol, models[] }
+ *   POST /api/config/providers/:id                更新供应商（名称 / 网关 / Key / 协议）
+ *   DELETE /api/config/providers/:id              删除供应商
+ *   POST /api/config/providers/:id/models         给该供应商添加模型（一个供应商可挂多个模型）
+ *   POST /api/config/providers/:id/models/:mid    更新单个模型（名称 / 多模态 / 上下文 / 思考等级）
+ *   DELETE /api/config/providers/:id/models/:mid  删除单个模型
+ *   POST /api/config/activate                     启用「供应商 × 模型」{ providerId, modelId }
+ *   POST /api/config/reasoning                    只改思考等级 { providerId?, modelId?, dialect?, level?, custom? }
  *
  * SSE 数据帧：每行 `data: {"type":"token","text":"..."}` + 空行，与 AgentEvent 一一对应。
  * 客户端断开：通过 AbortSignal 取消图流（模型请求随之中止），保证「停止」按钮可用。
@@ -29,7 +40,11 @@ import {
   rebuildIfStale, bumpConfigVersion, beginTurnRecord, completeTurnRecord, getTurnHistory,
 } from "./sessions.js";
 import type { Session } from "./sessions.js";
-import { loadSettings, listProviders, getActiveId, addProvider, updateProvider, deleteProvider, activateProvider, maskKey, fetchGatewayModels, getContextWindowForActive, refreshModelInfo, getActiveModality } from "./settings.js";
+import {
+  loadSettings, listProviders, getActiveId, getActiveModelId, addProvider, updateProvider, deleteProvider,
+  activate, addModel, updateModel, deleteModel, setReasoning, listDialects, getReasoningState,
+  maskKey, fetchGatewayModelList, getContextWindowForActive, refreshModelInfo, getActiveModality,
+} from "./settings.js";
 import { loadProjects, listProjects, getActiveProjectId, setActiveProject, addProject, deleteProject, refreshCloudProject } from "./projects.js";
 import { loadExternalAgents, listExternalAgents, getExternalAgent, addExternalAgent, updateExternalAgent, deleteExternalAgent, runExternalAgent } from "./external.js";
 import { listDir, readFileAuthorized, openRemoteRoot, storeUpload, resolveChatFiles, buildUserContent } from "./files.js";
@@ -288,6 +303,10 @@ const server = createServer(async (req, res) => {
         keyMasked: maskKey(config.apiKey),
         providers: listProviders(),
         activeProviderId: getActiveId(),
+        activeModelId: getActiveModelId(),
+        // 当前启用模型的思考等级（方言 + 档位 + 该方言的全部档位），前端顶栏/设置页据此渲染
+        reasoning: getReasoningState(),
+        dialects: listDialects(),
         contextWindow: getContextWindowForActive() ?? null,
         demos: DEMOS,
       }));
@@ -305,6 +324,74 @@ const server = createServer(async (req, res) => {
         }
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ ok: true, provider, activeChanged, mock: !config.apiKey }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+      return;
+    }
+
+    // ── 模型管理：给某个供应商添加模型（一个供应商可挂多个模型）──
+    const modelsMatch = pathname.match(/^\/api\/config\/providers\/([\w-]+)\/models$/);
+    if (modelsMatch && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      try {
+        const r = await addModel(modelsMatch[1], body);
+        if (r.activeChanged) {
+          bumpConfigVersion();
+          void refreshModelInfo().catch(() => {});
+        }
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true, ...r }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+      return;
+    }
+
+    // ── 模型管理：改 / 删单个模型 ──
+    const modelMatch = pathname.match(/^\/api\/config\/providers\/([\w-]+)\/models\/([\w-]+)$/);
+    if (modelMatch && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      try {
+        const r = await updateModel(modelMatch[1], modelMatch[2], body);
+        if (r.activeChanged) {
+          bumpConfigVersion();
+          void refreshModelInfo().catch(() => {});
+        }
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true, ...r }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+      return;
+    }
+    if (modelMatch && req.method === "DELETE") {
+      try {
+        const r = await deleteModel(modelMatch[1], modelMatch[2]);
+        if (r.activeChanged) {
+          bumpConfigVersion();
+          void refreshModelInfo().catch(() => {});
+        }
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true, ...r }));
+      } catch (err) {
+        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
+      return;
+    }
+
+    // ── 思考等级：只改当前（或指定）模型的方言 / 档位 ──
+    if (pathname === "/api/config/reasoning" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      try {
+        const r = await setReasoning(body);
+        if (r.activeChanged) bumpConfigVersion();
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true, ...r, reasoning: getReasoningState() }));
       } catch (err) {
         res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -348,17 +435,17 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    // ── 供应商管理：切换启用 ──
+    // ── 供应商管理：切换启用（可同时指定该供应商下的模型）──
     if (pathname === "/api/config/activate" && req.method === "POST") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { id?: string };
+      const body = JSON.parse((await readBody(req)) || "{}") as { id?: string; providerId?: string; modelId?: string };
       try {
-        const r = await activateProvider(body.id ?? "");
+        const r = await activate(body.providerId ?? body.id ?? "", body.modelId);
         if (r.activeChanged) {
           bumpConfigVersion();
           void refreshModelInfo().catch(() => {});
         }
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: true, ...r, mock: !config.apiKey, baseURL: config.baseURL }));
+        res.end(JSON.stringify({ ok: true, ...r, mock: !config.apiKey, baseURL: config.baseURL, reasoning: getReasoningState() }));
       } catch (err) {
         res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
@@ -368,12 +455,13 @@ const server = createServer(async (req, res) => {
 
     // 拉取网关模型列表（兼「测试连接」）：
     // { providerId } 用已存档案的 Key 测试 / { baseURL, apiKey, protocol } 用表单里未保存的值测试
+    // 返回每个模型的元信息（上下文窗口 / 多模态 / 是否支持推理），前端据此渲染可点击的模型清单
     if (pathname === "/api/models" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}") as {
         baseURL?: unknown; apiKey?: unknown; providerId?: unknown; protocol?: unknown;
       };
       try {
-        const models = await fetchGatewayModels({
+        const models = await fetchGatewayModelList({
           baseURL: typeof body.baseURL === "string" && body.baseURL.trim() ? body.baseURL : undefined,
           apiKey: typeof body.apiKey === "string" ? body.apiKey : undefined,
           providerId: typeof body.providerId === "string" ? body.providerId : undefined,
