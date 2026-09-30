@@ -6,7 +6,7 @@
 "use strict";
 
 /** 前端版本标记：改动 app.js 后递增，用于确认浏览器跑的是不是最新脚本 */
-const APP_VERSION = "web-2026-09-12-17";
+const APP_VERSION = "web-2026-09-12-18";
 console.log(
   "%c[LangGraph Demo] 前端脚本已加载 " + APP_VERSION,
   "color:#fff;background:#5b8cff;padding:2px 8px;border-radius:4px"
@@ -1388,10 +1388,158 @@ function applyConfigState(cfg) {
     reasonBadge.title = tag ? `当前思考等级：${tag}` : "";
   }
   renderProviderMenu();
+  renderComposerBar();
   updateContextBar();
   if (!$("settings-mask").classList.contains("hidden")) {
     renderProviderList();
     if (!$("provider-form-wrap").classList.contains("hidden")) renderModelPanel();
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 输入框上方：模型 / 思考等级 快捷切换（ZCode 风格 composer bar）
+ * ------------------------------------------------------------------------- */
+function activeProviderOf() {
+  return (state.config?.providers || []).find((p) => p.active) || null;
+}
+function activeModelEntryOf() {
+  const p = activeProviderOf();
+  return (p?.models || []).find((m) => m.active) || null;
+}
+
+/** 更新两个 chip 上的文字（applyConfigState 每次都会调用） */
+function renderComposerBar() {
+  const cfg = state.config;
+  if (!cfg || !$("cm-model")) return;
+  const m = activeModelEntryOf();
+  const modelText = document.querySelector("#cm-model .cm-text");
+  if (modelText) modelText.textContent = cfg.mock ? `模拟模式 · ${cfg.model}` : (m?.displayName || cfg.model);
+  const r = cfg.reasoning || {};
+  const thinkText = document.querySelector("#cm-thinking .cm-text");
+  if (thinkText) {
+    const lvl = (r.levels || []).find((l) => l.id === r.level);
+    thinkText.textContent = `思考·${lvl?.label || r.label || "默认"}`;
+  }
+  // 弹出菜单开着时同步刷新内容
+  if (!$("cm-model-menu")?.classList.contains("hidden")) renderModelMenu($("cm-model-menu"));
+  if (!$("cm-thinking-menu")?.classList.contains("hidden")) renderThinkingMenu($("cm-thinking-menu"));
+}
+
+function closeCmMenus() {
+  document.querySelectorAll(".cm-menu").forEach((el) => el.classList.add("hidden"));
+  document.querySelectorAll(".cm-chip.on").forEach((el) => el.classList.remove("on"));
+}
+
+function toggleCmMenu(chipId, menuId, render) {
+  const chip = $(chipId);
+  const menu = $(menuId);
+  if (!chip || !menu) return;
+  const opening = menu.classList.contains("hidden");
+  closeCmMenus();
+  if (opening) {
+    render(menu);
+    menu.classList.remove("hidden");
+    chip.classList.add("on");
+  }
+}
+
+/** 模型菜单：按供应商分组列出全部「供应商 × 模型」组合，点击即切换 */
+function renderModelMenu(menu) {
+  const cfg = state.config;
+  if (!cfg) return;
+  menu.innerHTML = "";
+  for (const p of cfg.providers || []) {
+    const sec = document.createElement("div");
+    sec.className = "cm-sec";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = p.name;
+    const protoSpan = document.createElement("span");
+    protoSpan.className = "cm-sub";
+    protoSpan.textContent = p.protocol && p.protocol !== "openai" ? (PROTOCOL_LABEL[p.protocol] || p.protocol) : "";
+    sec.append(nameSpan, protoSpan);
+    menu.appendChild(sec);
+    for (const m of p.models || []) {
+      // 全局切换器里只给「当前正在使用的模型」打勾（启用中的供应商 × 它选中的模型），
+      // 其他供应商各自选中的模型不打勾，避免菜单里同时出现多个 ✓
+      const isCurrent = Boolean(p.active) && Boolean(m.active);
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "cm-item" + (isCurrent ? " active" : "");
+      item.innerHTML = `<span class="ck">${isCurrent ? "✓" : ""}</span><span class="cm-label"></span><span class="cm-sub">${m.modality === "vision" ? "🖼 多模态" : ""}</span>`;
+      item.querySelector(".cm-label").textContent = m.displayName || m.name;
+      item.title = isCurrent ? "当前模型" : `切换到 ${p.name} · ${m.name}`;
+      item.addEventListener("click", async () => {
+        if (isCurrent) { closeCmMenus(); return; }
+        item.disabled = true;
+        try {
+          await api(`/api/config/providers/${p.id}/models/${m.id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ makeActive: true }),
+          });
+          applyConfigState(await api("/api/config"));
+        } catch (err) {
+          uiAlert(`切换失败：${err.message}`, "切换模型");
+        }
+        closeCmMenus();
+      });
+      menu.appendChild(item);
+    }
+  }
+  const divider = document.createElement("div");
+  divider.className = "cm-divider";
+  menu.appendChild(divider);
+  const manage = document.createElement("button");
+  manage.type = "button";
+  manage.className = "cm-item";
+  manage.innerHTML = `<span class="ck"></span><span class="cm-label">管理供应商与模型…</span>`;
+  manage.addEventListener("click", () => { closeCmMenus(); openSettings(); });
+  menu.appendChild(manage);
+}
+
+/** 思考等级菜单：选项来自当前模型方言（/api/config 的 reasoning.levels） */
+function renderThinkingMenu(menu) {
+  const r = state.config?.reasoning || {};
+  menu.innerHTML = "";
+  const sec = document.createElement("div");
+  sec.className = "cm-sec";
+  const head = document.createElement("span");
+  head.textContent = `思考等级 · ${activeModelEntryOf()?.displayName || state.config?.model || ""}`;
+  const sub = document.createElement("span");
+  sub.className = "cm-sub";
+  sub.textContent = r.dialectLabel || "";
+  sec.append(head, sub);
+  menu.appendChild(sec);
+  for (const l of r.levels || []) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "cm-item" + (l.id === r.level ? " active" : "");
+    item.innerHTML = `<span class="ck">${l.id === r.level ? "✓" : ""}</span><span class="cm-label"></span>`;
+    item.querySelector(".cm-label").textContent = l.label;
+    item.title = l.desc || "";
+    item.addEventListener("click", async () => {
+      if (l.id === r.level) { closeCmMenus(); return; }
+      item.disabled = true;
+      try {
+        await api("/api/config/reasoning", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // 带上当前方言：确保「档位」按同一套划分方式解释
+          body: JSON.stringify({ dialect: r.dialect && r.dialect !== "auto" ? r.dialect : undefined, level: l.id }),
+        });
+        applyConfigState(await api("/api/config"));
+      } catch (err) {
+        uiAlert(`设置失败：${err.message}`, "思考等级");
+      }
+      closeCmMenus();
+    });
+    menu.appendChild(item);
+  }
+  if (r.scheme) {
+    const desc = document.createElement("div");
+    desc.className = "cm-desc";
+    desc.textContent = r.scheme;
+    menu.appendChild(desc);
   }
 }
 
@@ -2391,6 +2539,10 @@ async function init() {
   on("sidebar-toggle", "click", () => setSidebarOpen(!$("sidebar").classList.contains("open")));
   on("sidebar-scrim", "click", () => setSidebarOpen(false));
 
+  // 输入框上方：模型 / 思考等级快捷切换
+  on("cm-model", "click", (e) => { e.stopPropagation(); toggleCmMenu("cm-model", "cm-model-menu", renderModelMenu); });
+  on("cm-thinking", "click", (e) => { e.stopPropagation(); toggleCmMenu("cm-thinking", "cm-thinking-menu", renderThinkingMenu); });
+
   // 供应商 / 模型：设置弹窗 + 顶栏切换器
   const closeSettings = () => { $("settings-mask").classList.add("hidden"); closeProviderForm(); };
   on("settings-btn", "click", openSettings);
@@ -2406,6 +2558,8 @@ async function init() {
     if (!sw || !sw.contains(e.target)) showProviderMenu(false);
     const pw = document.querySelector(".project-switch");
     if (!pw || !pw.contains(e.target)) showProjectMenu(false);
+    // composer 弹出菜单：点击组外关闭（组内交给各自的 item 处理器）
+    if (!e.target.closest(".cm-group")) closeCmMenus();
   });
 
   // 项目文件夹：切换 / 添加（本地 / 云端）
@@ -2501,6 +2655,7 @@ async function init() {
       closeFsModal();
       showProviderMenu(false);
       setSidebarOpen(false);
+      closeCmMenus();
     }
     if (e.key === "Enter" && ["pf-name", "pf-base-url", "pf-api-key"].includes(e.target.id)) {
       e.preventDefault();
